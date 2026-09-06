@@ -145,7 +145,7 @@ python main.py --host 0.0.0.0 --port 8791
 
 **功能演示视频：**
 
-<video controls width="100%" src="docs/功能演示.mp4"></video>
+![功能演示视频](docs/功能演示.mp4)
 
 > 若视频无法在预览中播放，可点击查看：[docs/功能演示.mp4](docs/功能演示.mp4)
 
