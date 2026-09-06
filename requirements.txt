@@ -1,0 +1,29 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+pyyaml
+loguru
+deepagents
+langchain
+langchain-core
+langgraph
+langgraph-checkpoint-postgres
+langsmith
+langchain-openai
+sqlalchemy[asyncio]
+asyncpg
+# psycopg3（异步）：AsyncPostgresSaver 驱动（区别于业务库的 asyncpg）
+psycopg[binary,pool]
+httpx
+
+# M1 简历解析
+python-docx
+pdfplumber
+pymupdf
+pytest
+pytest-asyncio
+ruff
+
+# 固定 cryptography 版本：50.x 起不提供 macOS x86_64 wheel，会触发源码编译失败
+cryptography==44.0.2

@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "get-job-agent"
+version = "0.1.0"
+description = "Get-Job 智能求职 Agent — Local Agent Server"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "pyyaml",
+    "loguru",
+    "deepagents",
+    "langchain",
+    "langchain-core",
+    "langgraph",
+    "langgraph-checkpoint-postgres",
+    "langchain-openai",
+    "sqlalchemy[asyncio]",
+    "asyncpg",
+    # psycopg3（异步）：langgraph-checkpoint-postgres 的 AsyncPostgresSaver 驱动（区别于业务库的 asyncpg）
+    "psycopg[binary,pool]",
+    "httpx",
+    # M1 简历解析
+    "python-docx",
+    "pdfplumber",
+    "pymupdf",
+    # 固定版本：50.x 起不提供 macOS x86_64 wheel，会触发源码编译失败
+    "cryptography==44.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# resume_extract.py 中的 E501 来自 LLM 提示词文本行，非代码行，允许超长
+"src/get_job_agent/agent/tools/resume_extract.py" = ["E501"]
+# resume_carry.py / job_filter.py 的 E501 多为内嵌中文比对/打分结果文案的 dict 字面量，与上面同性质，豁免
+"src/get_job_agent/agent/tools/resume_carry.py" = ["E501"]
+"src/get_job_agent/agent/job_filter.py" = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

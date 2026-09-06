@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Get-Job Agent 薄壳",
+  "description": "Get-Job 智能求职的浏览器薄壳：DOM 注入执行器 + 连通引导。登录态复用，数据均本地处理。",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "打开 Get-Job Agent 控制侧边栏"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background/worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.zhipin.com/*", "https://*.zhipin.com/*"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["storage", "sidePanel"],
+  "host_permissions": [
+    "https://www.zhipin.com/*",
+    "https://*.zhipin.com/*",
+    "http://127.0.0.1:8791/*",
+    "ws://127.0.0.1:8791/*"
+  ]
+}

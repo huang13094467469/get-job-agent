@@ -1,0 +1,234 @@
+:root {
+  --job-blue: #35a0fd;
+  --bg: #f5f7fa;
+  --card: #ffffff;
+  --border: #e5e9f0;
+  --text: #1f2329;
+  --muted: #8a919f;
+  --ok: #2e7d32;
+  --fail: #c62828;
+  --idle: #bdbdbd;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 13px/1.6 -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  background: linear-gradient(135deg, #35a0fd, #2563eb);
+  padding: 12px 14px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--job-blue);
+  font-size: 20px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.title {
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.subtitle {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+}
+
+.status,
+.resume-status,
+.resume,
+.goal,
+.greeting,
+.output {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px;
+}
+
+.detail {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 4px 0;
+}
+
+.label {
+  color: var(--muted);
+}
+
+.value {
+  font-weight: 600;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.fail {
+  background: var(--fail);
+}
+
+.dot.idle {
+  background: var(--idle);
+}
+
+.block-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.btn {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn.primary {
+  background: var(--job-blue);
+  border-color: var(--job-blue);
+  color: #fff;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.btn.danger {
+  margin-top: 4px;
+  background: #fff;
+  border-color: var(--fail);
+  color: var(--fail);
+  font-weight: 600;
+}
+
+.greeting-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.greeting-actions .btn {
+  margin-top: 0;
+  width: auto;
+  flex: 1;
+}
+
+.greeting-actions .btn.primary {
+  margin-top: 0;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.result {
+  margin-top: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.hidden {
+  display: none;
+}
+
+.output {
+  min-height: 120px;
+}
+
+.log {
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.log .step {
+  color: var(--job-blue);
+}
+
+.log .final {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  color: var(--text);
+}
+
+.log .err {
+  color: var(--fail);
+}
+
+.log .ok {
+  color: var(--ok);
+}
+
+/* 流式运行过程事件：模型叙述 / 工具调用 / 工具结果 */
+.log .think {
+  color: #6b7280;
+  font-style: italic;
+  margin-top: 4px;
+}
+
+.log .tool {
+  color: var(--job-blue);
+  margin-top: 2px;
+}
+
+.log .toolres {
+  color: var(--muted);
+}

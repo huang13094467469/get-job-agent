@@ -1,0 +1,53 @@
+# 业务配置：过滤规则 / prompt / 选择器 / 匹配阈值（M0 为占位，M3+ 填充）
+# 注意：连接串与凭证一律走 .env，不放本文件。
+
+filters:
+  city: []            # 城市/地区
+  experience: []      # 经验要求
+  education: []       # 学历要求
+  salary: []          # 薪资范围
+  distance_km: 30     # 通勤距离上限
+
+matching:
+  # ===== 面板 T3.5 筛选打分（job_filter 专用）=====
+  # 参与打分的维度 = 上面 filters 里配置了规则的维度；未配置规则的维度不进分子也不进分母。
+  threshold: 0.6      # 进入沟通环节的最低匹配分（job_filter eligible 判定）
+  weights:            # 面板筛选各维度权重（和为 1）
+    experience: 0.30
+    education: 0.20
+    salary: 0.30
+    city: 0.20        # 原 keyword 语义错位（把 city 规则挂到 keyword 上）已修正
+
+  # ===== 简历逐模块比对（resume_carry 专用，单一事实源）=====
+  # 供 get_resume_summary / compare_job_with_resume 端到端比对使用；
+  # 修改权重/阈值只需改这里，无需动 Python 代码。
+  compare_weights:
+    threshold: 0.6    # 综合分达标阈值（unknown 占比≥40% 视为信息不足，另行拦截）
+    weights:          # 各模块权重（和为 1）
+      skill: 0.35
+      experience: 0.20
+      education: 0.15
+      salary: 0.15
+      city: 0.15
+
+# 岗位卡片/字段选择器（M3 现场校准于 2026-09-04，推荐页 rec-job-list 实测）
+# 兼容推荐页 /web/geek/jobs 与搜索页 /web/geek/job；可选多选器以逗号分隔，按命中最优命中。
+selectors:
+  job_list: "li.job-card-box, .job-list-box .job-card-wrapper"
+  job_detail: ""
+  # ---- 单卡内字段（均可多值兜底）----
+  job_name: "a.job-name, .job-title .name"
+  salary: ".job-salary, .salary"
+  company: ".boss-name, .company-name, .company-text"
+  area: ".company-location, .job-area"
+  tags: "ul.tag-list > li, .tag-list li"
+  experience: "ul.tag-list > li:nth-child(1)"
+  education: "ul.tag-list > li:nth-child(2)"
+  job_link: "a.job-name, a[href*=\"/job_detail/\"]"
+  # ---- 过滤条件 / 分页 / 简历（待各自页面校准）----
+  filter_bar: ".search-filter, .job-filter, .filter-options"
+  filter_city: ".region-filter, .city-filter"
+  filter_experience: ".experience-filter"
+  filter_education: ".education-filter"
+  filter_salary: ".salary-filter"
+  next_page: ".ui-pager li.next a, .ui-icon-arrow-right"

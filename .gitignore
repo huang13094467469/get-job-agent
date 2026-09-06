@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.so
+.venv/
+venv/
+.env
+# 个人简历：含真实姓名/联系方式等隐私，不入库
+jianli/
+logs/
+data/
+# P1-5：deepagents 内部产物（会话历史转录）——已改走 ephemeral StateBackend 不再落盘，
+# 此处忽略历史遗留/兜底，防运行时转录进 git
+agent_resources/conversation_history/
+agent_resources/large_tool_results/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.spec
+.DS_Store
+.idea
+.idea/
+langchain-docs-en/

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Get-Job Agent</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">G</span>
+        <div>
+          <div class="title">智能求职助手</div>
+          <div class="subtitle">Get-Job Agent</div>
+        </div>
+      </div>
+    </header>
+
+    <section class="status">
+      <div class="row">
+        <span class="label">Agent Server</span>
+        <span class="value"><span class="dot idle" id="dot-server"></span><span id="txt-server">未连接</span></span>
+      </div>
+      <div class="row">
+        <span class="label">当前 Get-Job 页</span>
+        <span class="value"><span class="dot idle" id="dot-page"></span><span id="txt-page">未连接</span></span>
+      </div>
+    </section>
+
+    <section class="resume-status">
+      <div class="row">
+        <span class="label">简历状态</span>
+        <span class="value" id="txt-resume">—</span>
+      </div>
+      <div id="resume-detail" class="detail"></div>
+    </section>
+
+    <section class="resume">
+      <button id="btn-rescan" class="btn" type="button">重新扫描简历</button>
+      <div id="resume-result" class="result hidden"></div>
+    </section>
+
+    <section class="goal">
+      <div class="row">
+        <span class="label">Agent 状态</span>
+        <span class="value" id="txt-status">空闲</span>
+      </div>
+      <label class="block-label" for="goal-input">目标</label>
+      <textarea id="goal-input" rows="4" placeholder="例如：查看当前页面，读取岗位 JD，调用 get_resume_summary 后按模块比对"></textarea>
+      <button id="btn-go" class="btn primary" type="button">执行</button>
+      <button id="btn-stop" class="btn danger" type="button" disabled>停止</button>
+      <button id="btn-reset" class="btn" type="button">清空会话</button>
+    </section>
+
+    <section id="greeting-section" class="greeting hidden">
+      <div class="block-label">待确认打招呼话术（发送前需你批准）</div>
+      <textarea id="greeting-text" rows="4"></textarea>
+      <div class="greeting-actions">
+        <button id="btn-greet-approve" class="btn primary" type="button">确认发送</button>
+        <button id="btn-greet-edit" class="btn" type="button">发送修改后话术</button>
+        <button id="btn-greet-reject" class="btn danger" type="button">拒绝</button>
+      </div>
+      <div id="greeting-result" class="result hidden"></div>
+    </section>
+
+    <section class="output">
+      <div class="block-label">运行结果</div>
+      <div id="output" class="log"></div>
+    </section>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
