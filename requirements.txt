@@ -1,4 +1,6 @@
 fastapi
+# multipart 表单/文件上传（POST /resume/upload 必需）
+python-multipart
 uvicorn[standard]
 pydantic
 pydantic-settings

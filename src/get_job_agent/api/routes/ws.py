@@ -275,10 +275,14 @@ def _extract_interrupt(interrupts: Any) -> dict[str, Any] | None:
     return None
 
 
-async def _stream_agent_once(*, inputs: Any, thread_id: str, idem: str, ws: WebSocket) -> dict:
+async def _stream_agent_once(
+    *, inputs: Any, thread_id: str, idem: str, ws: WebSocket, mode: str | None = None
+) -> dict:
     """在给定 thread 上跑一段（一次 astream），实时推事件；返回状态字典。
 
     inputs 为 {"messages":[...]}（新目标/续跑）或 Command(resume=...)（恢复被暂停会话）。
+    mode 为该 thread 的运行模式（confirm/unattended）：决定取哪张编译图（是否挂 HITL 中断），
+    缺省时用全局 settings.agent_mode。
     不在这里发 agent_go_result（终态由 _run_agent_turn 统一决定）；但会推运行中状态、
     工具/叙述事件，以及 confirm 模式下的中断事件。返回：
       {done, interrupted, failed, final}。
@@ -289,7 +293,13 @@ async def _stream_agent_once(*, inputs: Any, thread_id: str, idem: str, ws: WebS
 
     st: dict[str, Any] = {"done": False, "interrupted": False, "failed": False, "final": ""}
     begin_trace()
-    agent = get_browser_agent(get_settings())
+    settings = get_settings()
+    run_mode = str(mode or settings.agent_mode).lower()
+    run_settings = (
+        settings if run_mode == str(settings.agent_mode).lower()
+        else settings.model_copy(update={"agent_mode": run_mode})
+    )
+    agent = get_browser_agent(run_settings)
     is_resume = isinstance(inputs, Command)
     cfg = ctx_config(
         thread_id=thread_id,
@@ -299,6 +309,7 @@ async def _stream_agent_once(*, inputs: Any, thread_id: str, idem: str, ws: WebS
     )
     seen: set[int] = set()
     final_answer: Any = ""
+    last_assistant_text = ""  # 最后一次模型输出文本：final 为空时的兜底（正常回复不被折叠）
     round_no = 0  # 仅用于前端展示；单段封顶已交给官方限额中间件（不再手动 break，评估 P0-3）
     try:
         async for chunk in agent.astream(inputs, config=cfg, stream_mode="updates"):
@@ -328,8 +339,11 @@ async def _stream_agent_once(*, inputs: Any, thread_id: str, idem: str, ws: WebS
                         ans_text = _content_str(m.content)
                         if ans_text.strip():
                             final_answer = m.content
+                            last_assistant_text = ans_text
+                            # 模型输出（含正常回复）完整推送：前端直接作为 Agent 正文显示，
+                            # 不截断，避免「只看到思考、看不到最终输出」。
                             _push_agent_event(ws, idem, {
-                                "kind": "assistant", "round": round_no, "text": ans_text[:600],
+                                "kind": "assistant", "round": round_no, "text": ans_text,
                             })
                         for tc in m.tool_calls or []:
                             args_s = json.dumps(tc.get("args") or {}, ensure_ascii=False)
@@ -359,19 +373,22 @@ async def _stream_agent_once(*, inputs: Any, thread_id: str, idem: str, ws: WebS
 
     # 限额中间件（ModelCallLimit exit_behavior='end'）超限时图干净 END、astream 正常结束；
     # 是否续跑由 _run_agent_turn 依据哨兵/投递上限/步数判定，本段不再手动 break（评估 P0-3）。
-    st["final"] = str(final_answer)
+    # final 优先取模型最后一条消息；为空时用最后一次 assistant 文本兜底，保证前端正文非空。
+    st["final"] = str(final_answer) or last_assistant_text
     st["done"] = True
     return st
 
 
 async def _send_turn_result(ws: WebSocket, idem: str, *, ok: bool, output: str = "",
-                            error: str = "", stopped: bool = False) -> None:
-    """向面板发送本轮（一个 goal 的完整自主运行）终态。"""
+                            error: str = "", stopped: bool = False,
+                            sent: int | None = None) -> None:
+    """向面板发送本轮（一个 goal 的完整自主运行）终态；sent 为已投递数（供面板展示）。"""
     status = "stopped" if stopped else ("done" if ok else "failed")
     _push_agent_status(ws, idem, {"status": status})
     await hub._send(ws, {
         "from": "server", "type": "agent_go_result", "idem": idem,
-        "payload": {"ok": ok, "stopped": stopped, "output": output, "error": error or None},
+        "payload": {"ok": ok, "stopped": stopped, "output": output, "error": error or None,
+                    "sent": sent},
     })
 
 
@@ -380,45 +397,69 @@ async def _run_agent_turn(*, start_inputs: Any, thread_id: str, idem: str, ws: W
 
     unattended：只要本段没报错/没中断、未输出结束哨兵、未达投递上限与最大步数，
     就向同一 thread 注入 _CONTINUE_MSG 接着处理下一个岗位，实现真正无人值守。
+
+    运行配置（模式/投递上限/意图）从 thread state 读（面板 agent_go 时写入，持久在 checkpoint）：
+    - mode 决定取哪张编译图（是否挂 HITL）与是否自动发送；
+    - job_hunt 决定是否自动续跑：**只有找工作任务才注入 _CONTINUE_MSG 续跑**，
+      普通对话/咨询无论模式只跑一段即返回，避免聊天时被诱导去投递；
+    - cap 与 send_greeting 工具同源，避免"工具已拒发但驱动还在续跑"的窗口。
     """
-    from ...agent.harness import get_browser_agent
+    from ...agent.harness import ctx_config, get_browser_agent
+    from ...agent.runtime_guard import get_agent_mode, get_max_greetings
 
     key = _agent_key(idem, ws)
     settings = get_settings()
+    cfg = ctx_config(thread_id=thread_id, recursion_limit=_RECURSION_LIMIT)
     agent = get_browser_agent(settings)
-    unattended = str(settings.agent_mode).lower() != "confirm"
-    cap = int(settings.max_greetings_per_run or 0)
+    # 读 thread 持久 state 里的运行配置（首轮由 _register_agent_go 写入）
+    snap = await agent.aget_state(cfg)
+    st_values = (snap.values or {}) if snap else {}
+    mode = get_agent_mode(st_values, settings.agent_mode)
+    cap = get_max_greetings(st_values, int(settings.max_greetings_per_run or 0))
+    job_hunt = bool(st_values.get("job_hunt", False))
+    run_settings = (
+        settings if mode == str(settings.agent_mode).lower()
+        else settings.model_copy(update={"agent_mode": mode})
+    )
+    agent = get_browser_agent(run_settings)
+    unattended = mode != "confirm"
     inputs = start_inputs
     final = ""
     steps = 0
     try:
         while True:
             steps += 1
-            st = await _stream_agent_once(inputs=inputs, thread_id=thread_id, idem=idem, ws=ws)
+            st = await _stream_agent_once(
+                inputs=inputs, thread_id=thread_id, idem=idem, ws=ws, mode=mode
+            )
             final = st.get("final") or final
             if st["failed"]:
-                await _send_turn_result(ws, idem, ok=False, error=final or "运行异常")
+                await _send_turn_result(ws, idem, ok=False, error=final or "运行异常",
+                                        sent=_state_greeting_count(agent, thread_id))
                 return
             if st["interrupted"]:
                 return  # confirm 已推中断事件，等面板 agent_resume
-            if not unattended:
-                # confirm 模式：跑完一段即返回（单段封顶由限额中间件负责，用户可再点「执行」继续）
-                await _send_turn_result(ws, idem, ok=True, output=final)
+            if not (unattended and job_hunt):
+                # 非找工作任务（聊天/咨询），或 confirm 模式：跑完一段即返回。
+                # 聊天不续跑：即使无人值守也不注入找工作推进指令，防止误投递。
+                await _send_turn_result(ws, idem, ok=True, output=final,
+                                        sent=_state_greeting_count(agent, thread_id))
                 return
             # unattended：判定是否自动续跑
             if _DONE_SENTINEL in final:
                 await _send_turn_result(ws, idem, ok=True,
-                                        output=final.replace(_DONE_SENTINEL, "").strip())
+                                        output=final.replace(_DONE_SENTINEL, "").strip(),
+                                        sent=_state_greeting_count(agent, thread_id))
                 return
             # 投递上限从 checkpointer 持久 state 读（替代进程级全局计数，评估 P0-2）
             sent = await _state_greeting_count(agent, thread_id)
             if cap > 0 and sent >= cap:
                 out = (final + f"\n（已达本轮投递上限 {cap} 个，自动停止）").strip()
-                await _send_turn_result(ws, idem, ok=True, output=out)
+                await _send_turn_result(ws, idem, ok=True, output=out, sent=sent)
                 return
             if steps >= _MAX_AUTO_STEPS:
                 out = (final + "\n（已达最大自动续跑步数，如需继续请再发起）").strip()
-                await _send_turn_result(ws, idem, ok=True, output=out)
+                await _send_turn_result(ws, idem, ok=True, output=out, sent=sent)
                 return
             logger.info("无人值守自动续跑 step={} thread={} 已投递={}", steps, thread_id, sent)
             inputs = {"messages": [{"role": "user", "content": _CONTINUE_MSG}]}
@@ -429,18 +470,78 @@ async def _run_agent_turn(*, start_inputs: Any, thread_id: str, idem: str, ws: W
         _agent_tasks.pop(key, None)
 
 
-def _register_agent_go(hub, msg: dict[str, Any], idem: str, websocket) -> None:
-    """面板发起自然语言目标 → 在本会话 thread 上启动（可能自动续跑的）运行驱动。"""
-    goal = str((msg.get("payload") or {}).get("goal") or "").strip()
+async def _classify_intent(goal: str) -> str:
+    """判断用户目标是「找工作/投递」(job_hunt) 还是「对话/咨询」(chat)。
+
+    用对话模型做一次轻量分类（输出单 token 级判断）。失败降级为 chat——
+    chat 语义下 agent 仍可凭 AGENTS.md 的意图分流自行判断并加载 skill，只是不自动续跑，安全。
+    """
+    from ...agent.harness import build_model
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    try:
+        model = build_model(get_settings())
+        resp = await model.ainvoke([
+            SystemMessage(content=(
+                "你是求职助手意图分类器。判断用户消息是否表达「找工作/投递简历」的明确意图"
+                "（找工作、搜岗位、投递、逐岗沟通、发打招呼、跑求职流程、对比岗位挑投递等）。"
+                "只输出一个词：job_hunt 或 chat。"
+            )),
+            HumanMessage(content=goal),
+        ])
+        text = str(getattr(resp, "content", "") or "").strip().lower()
+        return "job_hunt" if "job_hunt" in text else "chat"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("意图分类失败，按 chat 处理: {}", exc)
+        return "chat"
+
+
+async def _register_agent_go(hub, msg: dict[str, Any], idem: str, websocket) -> None:
+    """面板发起自然语言目标 → 写入运行配置到 thread state → 启动（可能自动续跑的）运行驱动。
+
+    面板可在 payload 里透传：
+    - mode: "confirm" | "unattended"（缺省用全局 settings.agent_mode）
+    - max_greetings: 本轮投递上限，0=不限（缺省用全局 settings.max_greetings_per_run）
+    """
+    from ...agent.harness import ctx_config, get_browser_agent
+
+    payload = msg.get("payload") or {}
+    goal = str(payload.get("goal") or "").strip()
     if not goal:
         asyncio.create_task(hub._send(websocket, {
             "from": "server", "type": "agent_go_result",
             "idem": idem, "payload": {"ok": False, "error": "goal 为空"},
         }))
         return
+    settings = get_settings()
+    # 模式：仅接受 confirm/unattended，非法值回退全局配置
+    mode = str(payload.get("mode") or settings.agent_mode).lower()
+    if mode not in ("confirm", "unattended"):
+        mode = str(settings.agent_mode).lower()
+    # 投递上限：非负整数，非法值回退全局配置
+    try:
+        cap = int(payload.get("max_greetings"))
+    except (TypeError, ValueError):
+        cap = int(settings.max_greetings_per_run or 0)
+    cap = max(0, cap)
+
     thread_id = _get_thread(websocket)
-    logger.info("agent_go 受理 thread={} mode={} goal={}",
-                thread_id, str(get_settings().agent_mode), goal[:80])
+    # 意图识别：找工作/投递 → 允许无人值守自动续跑；对话/咨询 → 只跑一段，避免被诱导去投递
+    intent = await _classify_intent(goal)
+    logger.info("agent_go 受理 thread={} mode={} max_greetings={} intent={} goal={}",
+                thread_id, mode, cap, intent, goal[:80])
+    # 把本轮运行配置写入 thread state（随 checkpoint 持久），send_greeting / 续跑判定同源读取
+    agent = get_browser_agent(
+        settings if mode == str(settings.agent_mode).lower()
+        else settings.model_copy(update={"agent_mode": mode})
+    )
+    try:
+        await agent.aupdate_state(
+            ctx_config(thread_id=thread_id, recursion_limit=_RECURSION_LIMIT),
+            {"max_greetings": cap, "agent_mode": mode, "job_hunt": intent == "job_hunt"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("写入运行配置到 thread state 失败（将用全局默认）: {}", exc)
     start_inputs = {"messages": [{"role": "user", "content": goal}]}
     task = asyncio.create_task(
         _run_agent_turn(start_inputs=start_inputs, thread_id=thread_id, idem=idem, ws=websocket)
@@ -634,7 +735,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     continue
                 # M5 computer-use：面板发起自然语言目标，后台跑浏览器操作 Agent
                 if msg.get("type") == "agent_go":
-                    _register_agent_go(hub, msg, idem, websocket)
+                    await _register_agent_go(hub, msg, idem, websocket)
                     continue
                 # 终止正在运行的浏览器 Agent
                 if msg.get("type") == "stop_agent":

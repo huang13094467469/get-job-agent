@@ -59,12 +59,11 @@ body {
 .status,
 .resume-status,
 .resume,
-.goal,
-.greeting,
-.output {
+.greeting {
   background: var(--card);
   border-bottom: 1px solid var(--border);
   padding: 10px 14px;
+  flex-shrink: 0;
 }
 
 .detail {
@@ -126,6 +125,109 @@ textarea {
   box-sizing: border-box;
 }
 
+input[type='file'] {
+  width: 100%;
+  font: inherit;
+  color: var(--muted);
+}
+
+input[type='file']::file-selector-button {
+  margin-right: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ---- 聊天框：状态条（顶）+ 消息区（中）+ 输入区（底）---- */
+.chatbox {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+}
+
+.chatbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.chat-status {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chat-status .dot {
+  margin-right: 4px;
+}
+
+.dot.running {
+  background: var(--job-blue);
+}
+
+.cfg-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.cfg-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cfg-cap input[type='number'] {
+  width: 52px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.chatinput {
+  flex-shrink: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.chatinput textarea {
+  resize: none;
+}
+
+.chatbtns {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chatbtns .btn {
+  margin-top: 0;
+  width: auto;
+  flex: 1;
+}
+
+.chatbtns .btn.primary {
+  margin-top: 0;
+}
+
 .btn {
   width: 100%;
   padding: 8px 12px;
@@ -185,50 +287,83 @@ textarea {
   display: none;
 }
 
-.output {
-  min-height: 120px;
-}
-
-.log {
-  max-height: 320px;
+/* ---- 聊天式对话区：用户/Agent 气泡 + 系统提示 + 工具调用标签 ---- */
+.messages {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+
+.msg {
+  max-width: 92%;
+  border-radius: 10px;
+  padding: 6px 10px;
   font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
   white-space: pre-wrap;
-  word-break: break-all;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.log .step {
-  color: var(--job-blue);
+.msg.user {
+  align-self: flex-end;
+  background: var(--job-blue);
+  color: #fff;
+  border-bottom-right-radius: 2px;
 }
 
-.log .final {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
-  color: var(--text);
+.msg.agent {
+  align-self: flex-start;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 2px;
 }
 
-.log .err {
+.msg.agent.fail .body {
   color: var(--fail);
 }
 
-.log .ok {
+.msg.sys {
+  align-self: center;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+.msg .body {
+  white-space: pre-wrap;
+}
+
+.msg .tools {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tool-tag {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.tool-tag.ok {
   color: var(--ok);
 }
 
-/* 流式运行过程事件：模型叙述 / 工具调用 / 工具结果 */
-.log .think {
-  color: #6b7280;
-  font-style: italic;
+.tool-tag.fail {
+  color: var(--fail);
+}
+
+.sent-line {
+  color: var(--ok);
   margin-top: 4px;
-}
-
-.log .tool {
-  color: var(--job-blue);
-  margin-top: 2px;
-}
-
-.log .toolres {
-  color: var(--muted);
 }

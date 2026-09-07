@@ -20,15 +20,22 @@ from deepagents import DeepAgentState
 class JobAgentState(DeepAgentState):
     """继承 DeepAgentState（保留 messages 的 DeltaChannel reducer，使 checkpoint 增长线性）。
 
-    新增三个护栏字段（替代原 runtime_guard 的进程级全局 dict）：
+    新增护栏/运行配置字段（替代原 runtime_guard 的进程级全局 dict）：
     - ``greeting_count``: 本 thread 已成功发送的打招呼数 —— 投递上限的单一事实源。
     - ``sent_hashes``: 已发话术指纹列表 —— 防同话术重复发（用 list 而非 set，保证可 JSON 序列化）。
     - ``pending_job``: 最近一个「达标待沟通」岗位 —— compare 暂存 → send_greeting 取用并升级账本。
+    - ``max_greetings``: 本轮投递上限（0=不限），由面板 agent_go 写入 —— 与 greeting_count 同源判定。
+    - ``agent_mode``: 创建本 thread 的运行模式（confirm/unattended），resume 时按此取正确的图。
+    - ``job_hunt``: 本轮任务是否为找工作（投递）意图：True 才允许无人值守自动续跑并注入
+      _CONTINUE_MSG；普通对话/咨询则只跑一段即回，避免聊天时被诱导去投递。
     """
 
     greeting_count: NotRequired[int]
     sent_hashes: NotRequired[list[str]]
     pending_job: NotRequired[dict[str, Any] | None]
+    max_greetings: NotRequired[int]
+    agent_mode: NotRequired[str]
+    job_hunt: NotRequired[bool]
 
 
 __all__ = ["JobAgentState"]

@@ -30,6 +30,24 @@ def get_greeting_count(state: Any) -> int:
         return 0
 
 
+def get_max_greetings(state: Any, default: int = 0) -> int:
+    """从 state 读本轮投递上限（0=不限）；未写入（旧 thread/未配置）时回退 default。"""
+    try:
+        v = (state or {}).get("max_greetings")
+        return int(v) if v is not None else int(default or 0)
+    except (TypeError, ValueError, AttributeError):
+        return int(default or 0)
+
+
+def get_agent_mode(state: Any, default: str = "confirm") -> str:
+    """从 state 读本 thread 的运行模式（confirm/unattended）；未写入时回退 default。"""
+    try:
+        v = (state or {}).get("agent_mode")
+        return str(v).lower() if v else str(default or "confirm").lower()
+    except (TypeError, ValueError, AttributeError):
+        return str(default or "confirm").lower()
+
+
 def get_sent_hashes(state: Any) -> list[str]:
     """从 state 读已发话术指纹列表（容错非序列化为空）。"""
     h = (state or {}).get("sent_hashes") if hasattr(state, "get") else None
@@ -63,6 +81,8 @@ def sent_update(state: Any, text: str) -> dict[str, Any]:
 __all__ = [
     "hash_greeting",
     "get_greeting_count",
+    "get_max_greetings",
+    "get_agent_mode",
     "get_sent_hashes",
     "is_duplicate",
     "get_pending_job",

@@ -9,6 +9,8 @@ description = "Get-Job 智能求职 Agent — Local Agent Server"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi",
+    # multipart 表单/文件上传（POST /resume/upload 必需）
+    "python-multipart",
     "uvicorn[standard]",
     "pydantic",
     "pydantic-settings",

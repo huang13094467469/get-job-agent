@@ -49,14 +49,23 @@ async def _run_resume_pipeline(
     # 4) 入库（含 raw 与画像）；必须先解析成 dict 再入库，
     #    否则 ResumeStore 会对 str 再 dumps 一次 → JSONB 存成字符串标量，读取链断掉（见架构全景 A.1）
     profile_obj = json_loads(profile_str)
-    resume_id = await store.insert(
-        user_key=user_key,
-        source=source,
-        file_name=file_name,
-        raw_text=text,
-        profile_json=profile_obj,
-    )
-    await store.update_profile(resume_id, profile_obj)
+    if source == "attachment":
+        # 附件按 user_key + 文件名替换更新（同名覆盖，无需重复 update_profile）
+        resume_id = await store.upsert_attachment(
+            user_key=user_key,
+            file_name=file_name,
+            raw_text=text,
+            profile_json=profile_obj,
+        )
+    else:
+        resume_id = await store.insert(
+            user_key=user_key,
+            source=source,
+            file_name=file_name,
+            raw_text=text,
+            profile_json=profile_obj,
+        )
+        await store.update_profile(resume_id, profile_obj)
 
     return {
         "resume_id": resume_id,

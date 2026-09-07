@@ -84,6 +84,63 @@ class ResumeStore:
             )
             await session.commit()
 
+    async def upsert_attachment(
+        self,
+        *,
+        user_key: str,
+        file_name: str,
+        raw_text: str,
+        profile_json: dict[str, Any] | None,
+    ) -> int:
+        """按 user_key + 附件文件名替换更新：同名已有记录则覆盖内容，否则新增。返回 id。"""
+        async with self._factory() as session:
+            async with session.begin():
+                row = (
+                    await session.execute(
+                        text(
+                            """
+                            SELECT id FROM resumes
+                            WHERE user_key = :uk AND file_name = :name AND source = 'attachment'
+                            ORDER BY id DESC LIMIT 1
+                            """
+                        ),
+                        {"uk": user_key, "name": file_name},
+                    )
+                ).scalar_one_or_none()
+                if row is not None:
+                    resume_id = int(row)
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE resumes
+                            SET raw_text = :raw, profile_json = :p
+                            WHERE id = :id
+                            """
+                        ),
+                        {"raw": raw_text, "p": _as_json(profile_json), "id": resume_id},
+                    )
+                    return resume_id
+                resume_id = int(
+                    (
+                        await session.execute(
+                            text(
+                                """
+                                INSERT INTO resumes (user_key, source, file_name, raw_text, profile_json)
+                                VALUES (:user_key, 'attachment', :file_name, :raw_text, :profile_json)
+                                RETURNING id
+                                """
+                            ),
+                            {
+                                "user_key": user_key,
+                                "file_name": file_name,
+                                "raw_text": raw_text,
+                                "profile_json": _as_json(profile_json),
+                            },
+                        )
+                    ).scalar_one()
+                )
+                return resume_id
+
     async def get(self, resume_id: int) -> dict[str, Any] | None:
         """按 id 取一条简历。"""
         async with self._factory() as session:

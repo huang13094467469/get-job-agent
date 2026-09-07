@@ -232,9 +232,10 @@ async def send_greeting(text: str, runtime: ToolRuntime) -> Command:
         return _cmd({"ok": False, "error": f"greeting_too_long(>{_GREETING_LIMIT}字)"})
 
     # 投递上限护栏（confirm / unattended 统一生效）：超限则不发送，让 Agent 收尾。
-    # 计数来自 thread state（随 checkpoint 持久），重启不归零，避免突破单轮上限。
+    # 计数与上限都来自 thread state（随 checkpoint 持久）：上限由面板 agent_go 写入，
+    # 未写入（旧 thread / 未配置）时回退全局配置，避免突破单轮上限。
     count = rg.get_greeting_count(state)
-    cap = int(get_settings().max_greetings_per_run or 0)
+    cap = rg.get_max_greetings(state, int(get_settings().max_greetings_per_run or 0))
     if cap > 0 and count >= cap:
         return _cmd(
             {"ok": False, "error": "greeting_cap_reached", "cap": cap, "sent": count,
