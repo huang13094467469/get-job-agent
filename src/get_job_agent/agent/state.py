@@ -23,7 +23,8 @@ class JobAgentState(DeepAgentState):
     新增护栏/运行配置字段（替代原 runtime_guard 的进程级全局 dict）：
     - ``greeting_count``: 本 thread 已成功发送的打招呼数 —— 投递上限的单一事实源。
     - ``sent_hashes``: 已发话术指纹列表 —— 防同话术重复发（用 list 而非 set，保证可 JSON 序列化）。
-    - ``pending_job``: 最近一个「达标待沟通」岗位 —— compare 暂存 → send_greeting 取用并升级账本。
+    - ``pending_job``: 最近一个「达标待沟通」岗位 —— compare 暂存 → check_greeting 预检 /
+      confirm_greeting_sent 登记时取用并升级账本。
     - ``max_greetings``: 本轮投递上限（0=不限），由面板 agent_go 写入 —— 与 greeting_count 同源判定。
     - ``agent_mode``: 创建本 thread 的运行模式（confirm/unattended），resume 时按此取正确的图。
     - ``job_hunt``: 本轮任务是否为找工作（投递）意图：True 才允许无人值守自动续跑并注入

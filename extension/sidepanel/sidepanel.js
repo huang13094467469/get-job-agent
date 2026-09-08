@@ -1,8 +1,12 @@
 /**
- * Side Panel 逻辑：直连 Agent Server WS（/ws），承载最基础的 Agent 控制。
+ * Side Panel — 聊天页：直连 Agent Server WS（/ws），与 Agent 对话并实时查看浏览器工具执行。
  * - 连接状态：Server / 当前 Get-Job 页
- * - 目标执行：agent_go → 后台跑浏览器操作 Agent
- * - 简历：手动触发 resume_build_dir 重扫
+ * - 对话：agent_go → 后台跑浏览器操作 Agent，事件流式回传（正文 + 工具卡 + 状态）
+ * - 简历：上传(PDF/DOCX) / 重扫目录 / 状态展示
+ * - 运行配置：无人值守开关 + 投递上限（localStorage 持久，随 agent_go 透传）
+ * - 原生 HITL：confirm 模式下 send_greeting 前弹层确认
+ *
+ * 无消息队列：运行中再发送会直接提示，不排队（避免后端无回执时消息卡死在队列里）。
  */
 const $ = (id) => document.getElementById(id)
 
@@ -11,33 +15,141 @@ const WS_URL = 'ws://127.0.0.1:8791/ws'
 let ws = null
 let connected = false
 let running = false
-let currentIdem = null // 当前运行中的 agent_go idem，用于「停止」
+let currentIdem = null
 
-function setStatus(text, ok) {
-  const el = $('txt-status')
-  el.textContent = text
-  el.style.color = ok === true ? 'var(--ok)' : ok === false ? 'var(--fail)' : 'inherit'
-  // 聊天框顶栏状态点：空闲=灰 / 运行中=蓝 / 成功=绿 / 失败=红
-  const dot = $('dot-agent')
-  if (dot) {
-    const idle = ['空闲', '未连接', '未知']
-    dot.className = 'dot ' + (ok === true ? 'ok' : ok === false ? 'fail'
-      : (idle.includes(text) ? 'idle' : 'running'))
+// 持久客户端标识：绑定会话线程，面板刷新/扩展重载后不变（连续对话）
+function getClientId() {
+  let id = localStorage.getItem('gja.clientId')
+  if (!id) {
+    id = 'c_' + Math.random().toString(36).slice(2, 12)
+    try { localStorage.setItem('gja.clientId', id) } catch (e) { /* 忽略 */ }
+  }
+  return id
+}
+
+/* ============================ 轻量 Markdown 渲染 ============================ */
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function inline(t) {
+  t = t.replace(/`([^`\n]+)`/g, (m, c) => '<code>' + c + '</code>')
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener">$1</a>')
+  return t
+}
+
+function splitRow(line) {
+  let l = String(line).trim()
+  if (l.startsWith('|')) l = l.slice(1)
+  if (l.endsWith('|')) l = l.slice(0, -1)
+  return l.split('|').map((c) => c.trim())
+}
+
+function md(src) {
+  if (!src) return ''
+  const codeBlocks = []
+  let s = String(src).replace(/```[^\n]*\n?([\s\S]*?)\n?```/g, (m, code) => {
+    const i = codeBlocks.push(code) - 1
+    return '\u0000CODE' + i + '\u0000'
+  })
+  s = esc(s)
+  const lines = s.split('\n')
+  const out = []
+  let listType = null
+  let listBuf = []
+  let para = []
+
+  const flushPara = () => {
+    if (para.length) { out.push('<p>' + inline(para.join(' ')) + '</p>'); para = [] }
+  }
+  const flushList = () => {
+    if (listBuf.length) { out.push('<' + listType + '>' + listBuf.join('') + '</' + listType + '>'); listBuf = []; listType = null }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i].trimEnd()
+    const line = raw.trim()
+    if (/^(---|\*\*\*|___)\s*$/.test(line)) { flushPara(); flushList(); out.push('<hr>'); continue }
+    const h = line.match(/^(#{1,4})\s+(.*)$/)
+    if (h) { flushPara(); flushList(); const lv = h[1].length; out.push('<h' + lv + '>' + inline(h[2]) + '</h' + lv + '>'); continue }
+    if (/^>\s?/.test(line)) { flushPara(); flushList(); out.push('<blockquote>' + inline(line.replace(/^>\s?/, '')) + '</blockquote>'); continue }
+    // 表格：当前行含 |，且下一行是纯 | - : 组成的分隔行
+    const next = i + 1 < lines.length ? lines[i + 1].trim() : ''
+    if (line.includes('|') && next.includes('|') && /^[\s|:\-]+$/.test(next)) {
+      flushPara(); flushList()
+      const body = []
+      i++ // 跳过分隔行
+      while (i + 1 < lines.length) {
+        const nl = lines[i + 1].trim()
+        if (nl.includes('|')) { body.push(nl); i++ } else break
+      }
+      let t = '<table><thead><tr>'
+      splitRow(line).forEach((c) => { t += '<th>' + inline(c) + '</th>' })
+      t += '</tr></thead><tbody>'
+      body.forEach((b) => {
+        t += '<tr>'
+        splitRow(b).forEach((c) => { t += '<td>' + inline(c) + '</td>' })
+        t += '</tr>'
+      })
+      out.push(t + '</tbody></table>')
+      continue
+    }
+    if (/^[-*+]\s+/.test(line)) { flushPara(); if (listType !== 'ul') { flushList(); listType = 'ul' } listBuf.push('<li>' + inline(line.replace(/^[-*+]\s+/, '')) + '</li>'); continue }
+    if (/^\d+[.)]\s+/.test(line)) { flushPara(); if (listType !== 'ol') { flushList(); listType = 'ol' } listBuf.push('<li>' + inline(line.replace(/^\d+[.)]\s+/, '')) + '</li>'); continue }
+    if (line === '') { flushPara(); flushList(); continue }
+    para.push(raw)
+  }
+  flushPara()
+  flushList()
+
+  let html = out.join('\n')
+  html = html.replace(/\u0000CODE(\d+)\u0000/g, (m, idx) => {
+    const code = codeBlocks[Number(idx)]
+    return '<pre><code>' + esc(code) + '</code></pre>'
+  })
+  return html
+}
+
+function prettyJson(s) {
+  if (!s) return ''
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2)
+  } catch {
+    return String(s)
   }
 }
 
+/* ============================ 状态指示 ============================ */
+
+function setStatus(text, ok) {
+  $('txt-status').textContent = text
+  const dot = $('dot-agent')
+  const idle = ['空闲', '未连接', '未知']
+  dot.className = 'dot ' + (ok === true ? 'ok' : ok === false ? 'fail'
+    : (idle.includes(text) ? '' : 'running'))
+}
+
 function setServer(ok, label) {
-  $('dot-server').className = 'dot ' + (ok ? 'ok' : ok === null ? 'idle' : 'fail')
+  $('dot-server').className = 'dot ' + (ok ? 'ok' : ok === null ? '' : 'fail')
   $('txt-server').textContent = label
 }
 
 function setPage(ok, label) {
-  $('dot-page').className = 'dot ' + (ok ? 'ok' : ok === null ? 'idle' : 'fail')
+  $('dot-page').className = 'dot ' + (ok ? 'ok' : ok === null ? '' : 'fail')
   $('txt-page').textContent = label
 }
 
-// ---- 聊天式渲染：用户/Agent 气泡，Agent 消息含正文 + 工具调用标签 + 可折叠思考过程 ----
-let curAgent = null // 当前 Agent 消息容器 {el, body, tools, procBody, queue}
+/* ============================ 聊天渲染 ============================ */
+
+let curAgent = null
 
 function scrollChat() {
   const el = $('chat')
@@ -65,49 +177,78 @@ function newAgentMsg() {
   wrap.className = 'msg agent'
   const body = document.createElement('div')
   body.className = 'body'
-  body.textContent = '正在处理…'
   const tools = document.createElement('div')
   tools.className = 'tools'
   wrap.appendChild(body)
   wrap.appendChild(tools)
   $('chat').appendChild(wrap)
   curAgent = { el: wrap, body, tools, queue: [] }
+  showTyping()
   scrollChat()
   return curAgent
 }
 
+function ensureAgentMsg() {
+  return curAgent || newAgentMsg()
+}
+
+function showTyping() {
+  if (curAgent) {
+    curAgent.body.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>'
+  }
+}
+
 function setAgentBody(text) {
-  if (!curAgent) newAgentMsg()
-  curAgent.body.textContent = text
+  const a = ensureAgentMsg()
+  a.body.innerHTML = text ? md(text) : ''
   scrollChat()
 }
 
-function appendToolCall(name, args, round) {
-  if (!curAgent) newAgentMsg()
-  const tag = document.createElement('span')
-  tag.className = 'tool-tag pending'
-  tag.textContent = '🔧 ' + (name || 'tool')
-  if (args) tag.title = args
-  curAgent.tools.appendChild(tag)
-  curAgent.queue.push({ tag })
+function appendToolCall(name, args) {
+  const a = ensureAgentMsg()
+  const card = document.createElement('div')
+  card.className = 'tool open'
+  card.innerHTML =
+    '<div class="tool-head">' +
+      '<span class="tool-status pending"></span>' +
+      '<span class="tool-name"></span>' +
+      '<span class="tool-summary"></span>' +
+      '<span class="tool-toggle">▾</span>' +
+    '</div>' +
+    '<div class="tool-detail">' +
+      '<div class="k">参数</div><pre class="v-args"></pre>' +
+      '<div class="k">结果</div><pre class="v-result">等待中…</pre>' +
+    '</div>'
+  card.querySelector('.tool-name').textContent = name || 'tool'
+  card.querySelector('.v-args').textContent = prettyJson(args) || '（无参数）'
+  card.querySelector('.tool-head').addEventListener('click', () => card.classList.toggle('open'))
+  a.tools.appendChild(card)
+  a.queue.push({ card, name })
   scrollChat()
+  return card
 }
 
 function resolveToolResult(name, ok, summary) {
-  if (!curAgent || !curAgent.queue.length) return
-  const item = curAgent.queue.shift() // 工具调用与结果按序成对出现，顺序匹配
-  const tag = item.tag
-  tag.classList.remove('pending')
-  if (ok === false) tag.classList.add('fail')
-  else if (ok === true) tag.classList.add('ok')
-  if (summary) tag.textContent += ' [' + summary + ']'
+  const a = curAgent
+  if (!a || !a.queue.length) return
+  const item = a.queue.shift()
+  const card = item.card
+  const st = card.querySelector('.tool-status')
+  st.classList.remove('pending')
+  if (ok === false) st.classList.add('fail')
+  else if (ok === true) st.classList.add('ok')
+  if (summary) card.querySelector('.tool-summary').textContent = summary
+  const res = card.querySelector('.v-result')
+  res.textContent = summary || (ok === true ? '成功' : ok === false ? '失败' : '完成')
+  res.classList.toggle('v-ok', ok === true)
+  res.classList.toggle('v-fail', ok === false)
   scrollChat()
 }
 
 function finishAgentMsg(text, sent, ok) {
-  if (!curAgent) newAgentMsg()
-  const a = curAgent
-  if (text) a.body.textContent = text
+  const a = ensureAgentMsg()
+  if (text) a.body.innerHTML = md(text)
+  else a.body.textContent = ''
   if (ok === false) a.el.classList.add('fail')
   if (sent !== undefined && sent !== null) {
     const line = document.createElement('div')
@@ -115,7 +256,7 @@ function finishAgentMsg(text, sent, ok) {
     line.textContent = '本轮已投递打招呼: ' + sent + ' 个'
     a.body.appendChild(line)
   }
-  if (!a.tools.childNodes.length) a.tools.remove() // 无工具调用则不显示空标签行
+  if (!a.tools.childNodes.length) a.tools.remove()
   curAgent = null
   scrollChat()
 }
@@ -125,11 +266,8 @@ function clearChat() {
   curAgent = null
 }
 
-function genIdem() {
-  return 'sp_' + Math.random().toString(36).slice(2, 10)
-}
+/* ============================ 运行配置 ============================ */
 
-// ---- 运行配置：无人值守开关 + 投递上限（localStorage 持久，随 agent_go 透传给 Server）----
 const CFG_KEY = 'gja.runCfg'
 
 function saveRunConfig() {
@@ -148,15 +286,14 @@ function loadRunConfig() {
       $('cfg-max-greetings').value = Math.max(0, parseInt(cfg.maxGreetings, 10) || 0)
       return
     }
-  } catch (e) { /* 无本地记录，走 Server 默认 */ }
-  // 首次使用：以 Server 全局配置为默认
+  } catch (e) { /* 无本地记录 */ }
   fetch('http://127.0.0.1:8791/agent/run-config')
     .then((r) => r.json())
     .then((d) => {
       $('cfg-unattended').checked = String(d.agent_mode || '').toLowerCase() !== 'confirm'
       $('cfg-max-greetings').value = Math.max(0, parseInt(d.max_greetings_per_run, 10) || 0)
     })
-    .catch(() => { /* Server 未连接时保持 0/默认，执行前会有连接提示 */ })
+    .catch(() => { /* Server 未连接 */ })
 }
 
 function getRunConfig() {
@@ -166,21 +303,23 @@ function getRunConfig() {
   }
 }
 
-// ---- 原生 HITL：Agent 调用 send_greeting 前会暂停，server 推 kind=interrupt 事件待确认 ----
+/* ============================ 打招呼确认（HITL） ============================ */
+
 function showGreetingConfirm(greeting) {
-  const section = $('greeting-section')
-  $('greeting-text').value = greeting
+  $('greeting-text').value = greeting || ''
   $('greeting-result').classList.add('hidden')
   $('greeting-result').textContent = ''
-  section.classList.remove('hidden')
-  section.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  $('greeting-overlay').classList.remove('hidden')
 }
 
 function hideGreetingConfirm() {
-  $('greeting-section').classList.add('hidden')
+  $('greeting-overlay').classList.add('hidden')
 }
 
-// 以确认结果恢复被暂停的会话（approve/edit/reject），server 用 Command(resume) 续跑同一 thread
+function genIdem() {
+  return 'sp_' + Math.random().toString(36).slice(2, 10)
+}
+
 function resumeWithDecision(decision) {
   if (!connected || !ws) {
     addSysMsg('Server 未连接，无法确认。')
@@ -190,34 +329,28 @@ function resumeWithDecision(decision) {
   el.classList.remove('hidden')
   el.style.color = 'inherit'
   el.textContent = decision.type === 'reject' ? '已拒绝，Agent 继续下一个岗位…' : '已确认，正在发送…'
-  // 续跑使用新的 idem，并接管为当前任务（后续事件按此 idem 流式回传）
   const idem = genIdem()
   currentIdem = idem
   running = true
-  $('btn-go').disabled = true
   $('btn-stop').disabled = false
   hideGreetingConfirm()
   ws.send(JSON.stringify({ from: 'panel', type: 'agent_resume', idem, payload: { decision } }))
 }
 
-function approveGreeting() {
-  resumeWithDecision({ type: 'approve' })
-}
+function approveGreeting() { resumeWithDecision({ type: 'approve' }) }
 
 function editSendGreeting() {
   const text = $('greeting-text').value.trim()
-  if (!text) {
-    addSysMsg('话术为空，请先修改再发送。')
-    return
-  }
+  if (!text) { addSysMsg('话术为空，请先修改再发送。'); return }
   resumeWithDecision({ type: 'edit', text })
 }
 
 function rejectGreeting() {
-  resumeWithDecision({ type: 'reject', message: '用户拒绝发送该话术，请跳过本岗位、继续寻找下一个岗位或结束。' })
+  resumeWithDecision({ type: 'reject', message: '用户拒绝发送该话术，请跳过本岗位、继续下一个或结束。' })
 }
 
-// 面板→Server 的 WS：带指数退避的自动重连（Server 重启/网络抖动/MV3 挂起后能自动恢复）
+/* ============================ WS 连接 ============================ */
+
 let wsReconnectTimer = null
 let wsBackoff = 1000
 
@@ -228,7 +361,7 @@ function scheduleReconnect() {
     wsReconnectTimer = null
     connect()
   }, wsBackoff)
-  wsBackoff = Math.min(wsBackoff * 2, 10000) // 1s → 2s → 4s → 8s → 封顶 10s
+  wsBackoff = Math.min(wsBackoff * 2, 10000)
 }
 
 function connect() {
@@ -246,20 +379,14 @@ function connect() {
 
   ws.addEventListener('open', () => {
     connected = true
-    wsBackoff = 1000 // 连上即重置退避
+    wsBackoff = 1000
     setServer(true, '已连接')
-    ws.send(JSON.stringify({ from: 'panel', type: 'register' }))
-    drainQueue() // 断线期间排队的消息，重连后自动处理
-    // 注册后 Server 会回放当前页面连接态，无需刷新页面即可显示「已连接」
+    ws.send(JSON.stringify({ from: 'panel', type: 'register', client_id: getClientId() }))
   })
 
   ws.addEventListener('message', (evt) => {
     let msg
-    try {
-      msg = JSON.parse(evt.data)
-    } catch {
-      return
-    }
+    try { msg = JSON.parse(evt.data) } catch { return }
     handleMessage(msg)
   })
 
@@ -268,7 +395,7 @@ function connect() {
     setServer(null, '已断开')
     if (running) {
       running = false
-      $('btn-go').disabled = false
+      clearWatchdog()
       $('btn-stop').disabled = true
       addSysMsg('连接已断开，运行中断。将自动重连…')
     }
@@ -288,16 +415,12 @@ function handleMessage(msg) {
       setPage(Boolean(msg.page_id), msg.page_id ? '已连接' : '未连接')
       break
     case 'agent_event': {
-      if (msg.idem !== currentIdem && currentIdem) break // 忽略其他任务的事件
+      if (msg.idem !== currentIdem && currentIdem) break
       const e = msg.payload || {}
-      if (e.kind === 'assistant') {
-        setAgentBody(e.text || '') // 模型输出（含正常回复）直接作为 Agent 正文显示
-      } else if (e.kind === 'tool_call') {
-        appendToolCall(e.tool, e.args, e.round)
-      } else if (e.kind === 'tool_result') {
-        resolveToolResult(e.tool, e.ok, e.summary)
-      } else if (e.kind === 'interrupt') {
-        // Agent 拟调用 send_greeting → 暂停；展示话术让用户批准/修改/拒绝
+      if (e.kind === 'assistant') setAgentBody(e.text || '')
+      else if (e.kind === 'tool_call') appendToolCall(e.tool, e.args)
+      else if (e.kind === 'tool_result') resolveToolResult(e.tool, e.ok, e.summary)
+      else if (e.kind === 'interrupt') {
         addSysMsg('⏸ 已生成打招呼话术，等待你确认…')
         setStatus('等待你确认话术')
         showGreetingConfirm(e.greeting || '')
@@ -305,10 +428,10 @@ function handleMessage(msg) {
       break
     }
     case 'agent_status': {
-      if (msg.idem !== currentIdem && currentIdem) break // 忽略其他任务的状态
+      if (msg.idem !== currentIdem && currentIdem) break
       const s = (msg.payload || {}).status
       if (s === 'operating') setStatus('正在操作浏览器: ' + (msg.payload.tool || '…'))
-      else if (s === 'running') setStatus('运行中…（思考/规划）')
+      else if (s === 'running') setStatus('运行中…')
       else if (s === 'awaiting_confirmation') setStatus('等待你确认话术')
       else if (s === 'stopping') setStatus('正在停止…')
       else if (s === 'stopped') setStatus('已停止', false)
@@ -318,50 +441,45 @@ function handleMessage(msg) {
       break
     }
     case 'agent_go_result': {
+      // 新消息会顶掉旧任务；旧任务的收尾回执(idem 不匹配)需忽略，以免误清正在运行的新一轮。
+      if (currentIdem && msg.idem !== currentIdem) break
       running = false
       currentIdem = null
-      $('btn-go').disabled = false
       $('btn-stop').disabled = true
       const p = msg.payload || {}
       if (!p.ok) {
         setStatus(p.stopped ? '已停止' : '失败', false)
-        finishAgentMsg(p.stopped ? ('已停止: ' + (p.error || '')) : ('执行失败: ' + (p.error || '未知错误')),
-          null, false)
-        drainQueue()
+        finishAgentMsg(p.stopped ? ('已停止: ' + (p.error || '')) : ('执行失败: ' + (p.error || '未知错误')), null, false)
         break
       }
       setStatus('已完成', true)
-      // 一轮完整对话：正文 = 最终回复，工具调用标签已流式展示，sent 汇总投递数
       finishAgentMsg(String(p.output || '(无输出)'), p.sent, true)
-      drainQueue()
       break
     }
     case 'reset_agent_result': {
       setStatus('空闲')
       running = false
       currentIdem = null
-      $('btn-go').disabled = false
       $('btn-stop').disabled = true
       hideGreetingConfirm()
       clearChat()
-      addSysMsg('会话已清空。此后每次「执行」均为全新一轮对话。')
+      addSysMsg('会话已清空。此后每次「发送」均为全新一轮对话。')
       break
     }
     case 'resume_build_dir_result': {
       const p = msg.payload || {}
-      const el = $('resume-result')
+      const el = $('upload-result')
       el.classList.remove('hidden')
+      const fmt = (arr) => (Array.isArray(arr) && arr.length ? arr.join('、') : '（无）')
       if (!p.ok) {
         el.textContent = '扫描失败: ' + (p.error || '未知错误')
         break
       }
-      // 注意：数组为空时显示（无），避免优先级/空串造成"卡住"假象
-      const fmt = (arr) => (Array.isArray(arr) && arr.length ? arr.join('、') : '（无）')
       el.textContent =
-        '扫描目录: ' + p.directory +
-        '\n成功: ' + fmt(p.scanned) +
-        '\n跳过: ' + fmt(p.skipped) +
-        '\n失败: ' + (p.failed && p.failed.length ? p.failed.map((f) => f.file + '(' + f.reason + ')').join('、') : '（无）')
+        '扫描目录: ' + p.directory + '\n成功: ' + fmt(p.scanned) +
+        '\n跳过: ' + fmt(p.skipped) + '\n失败: ' +
+        (p.failed && p.failed.length ? p.failed.map((f) => f.file + '(' + f.reason + ')').join('、') : '（无）')
+      loadResumeStatus()
       break
     }
     default:
@@ -369,49 +487,37 @@ function handleMessage(msg) {
   }
 }
 
+/* ============================ 发送 / 控制 ============================ */
+
 function start() {
   const goal = $('goal-input').value.trim()
-  if (!goal) {
-    addSysMsg('请输入目标。')
-    return
-  }
-  if (!connected) {
-    addSysMsg('Server 未连接，无法执行。')
-    return
-  }
+  if (!goal) { addSysMsg('请输入目标。'); return }
+  if (!connected) { addSysMsg('Server 未连接，无法执行。'); return }
   if (running) {
-    // 运行中不再拦截：新消息排队，当前任务结束后自动发送（支持连续追问）
-    pendingQueue.push(goal)
-    $('goal-input').value = ''
-    addSysMsg('当前任务运行中，已加入队列（' + pendingQueue.length + ' 条待发送）。')
-    return
+    if (!$('greeting-overlay').classList.contains('hidden')) {
+      addSysMsg('当前有待确认的打招呼话术，请先在弹层处理（确认/修改/拒绝）后再发送。')
+      return
+    }
+    // 连续对话：直接发起新消息，后端会自动打断上一任务并改为运行本轮。
+    addSysMsg('⏭ 已顶替上一任务，开始处理新消息…')
   }
   sendGoal(goal)
 }
 
 function sendGoal(goal) {
-  saveRunConfig() // 每次执行前落盘当前开关/上限
+  saveRunConfig()
   const cfg = getRunConfig()
   const idem = genIdem()
   running = true
   currentIdem = idem
-  $('btn-go').disabled = true
   $('btn-stop').disabled = false
-  // 聊天式展示：用户气泡 + Agent 气泡占位 + 模式提示
   addUserMsg(goal)
   newAgentMsg()
-  addSysMsg('模式: ' + (cfg.mode === 'unattended' ? '无人值守' : '需确认')
-    + (cfg.max_greetings > 0 ? ' | 投递上限: ' + cfg.max_greetings + ' 个' : ' | 投递不限'))
-  setStatus('运行中…（思考/规划）')
+  addSysMsg((cfg.mode === 'unattended' ? '无人值守' : '需确认')
+    + (cfg.max_greetings > 0 ? ' | 投递上限 ' + cfg.max_greetings + ' 个' : ''))
+  setStatus('运行中…')
   ws.send(JSON.stringify({ from: 'panel', type: 'agent_go', idem, payload: { goal, ...cfg } }))
-}
-
-// 任务结束后：自动发送队列中的下一条消息（连接断开时保留队列，重连后继续）
-function drainQueue() {
-  if (!connected || running || !pendingQueue.length) return
-  const next = pendingQueue.shift()
-  addSysMsg('开始处理队列中的下一条消息…')
-  sendGoal(next)
+  armWatchdog()
 }
 
 function stop() {
@@ -421,37 +527,37 @@ function stop() {
 }
 
 function resetSession() {
-  if (!connected) {
-    addSysMsg('Server 未连接，无法清空。')
-    return
-  }
-  pendingQueue = [] // 清空会话同时丢弃排队消息
+  if (!connected) { addSysMsg('Server 未连接，无法清空。'); return }
   const idem = genIdem()
   ws.send(JSON.stringify({ from: 'panel', type: 'reset_agent', idem }))
   setStatus('清空中…')
   addSysMsg('⏹ 请求清空会话…')
 }
 
-function rescan() {
-  if (!connected) {
-    addSysMsg('Server 未连接，无法扫描。')
-    return
-  }
-  const idem = genIdem()
-  ws.send(JSON.stringify({ from: 'panel', type: 'resume_build_dir', idem }))
+/* ============================ 看门狗 ============================ */
+
+let watchdogTimer = null
+
+function armWatchdog() {
+  clearWatchdog()
+  watchdogTimer = setTimeout(() => {
+    if (running) addSysMsg('⏱ 任务已运行 3 分钟仍无结果，可能卡住。可点「停止」结束，或查看后端日志。')
+  }, 180000)
 }
 
-// 简历上传：直连 Server REST（扩展已授予 127.0.0.1:8791 host 权限），multipart 上传后由后端解析入库
+function clearWatchdog() {
+  if (watchdogTimer !== null) { clearTimeout(watchdogTimer); watchdogTimer = null }
+}
+
+/* ============================ 简历 ============================ */
+
 async function uploadResume() {
   const input = $('resume-file')
   const el = $('upload-result')
   const file = input.files && input.files[0]
   el.classList.remove('hidden')
-  if (!file) {
-    el.textContent = '请先选择简历文件（PDF/DOCX）。'
-    return
-  }
-  el.textContent = '上传中…（上传后后端解析，同名文件将替换更新）'
+  if (!file) { el.textContent = '请先选择简历文件（PDF/DOCX）。'; return }
+  el.textContent = '上传中…（后端解析，同名文件替换更新）'
   const fd = new FormData()
   fd.append('user_key', 'default')
   fd.append('file', file)
@@ -466,14 +572,13 @@ async function uploadResume() {
     const v = data.validation || {}
     const warn = v.errors && v.errors.length ? '（校验告警: ' + v.errors.join('、') + '）' : ''
     el.textContent = '解析完成 ✓ 简历 id: ' + data.resume_id + '，来源: ' + data.source + warn
-    input.value = '' // 清空选择，便于再次选择同名文件
+    input.value = ''
     loadResumeStatus()
   } catch (e) {
     el.textContent = '上传失败: ' + String(e && e.message ? e.message : e)
   }
 }
 
-// 简历状态：直连 Server REST（扩展已授予 127.0.0.1:8791 host 权限），实时显示解析情况
 async function loadResumeStatus() {
   const txt = $('txt-resume')
   const detail = $('resume-detail')
@@ -490,18 +595,26 @@ async function loadResumeStatus() {
     }
     const p = attach.profile_json || {}
     const intent = p.intent || {}
-    txt.textContent = '已解析 ✓'
+    txt.textContent = '已解析 ✓  ' + (p.name || '')
     detail.textContent =
-      'id: ' + attach.id +
-      ' | 文件: ' + attach.file_name +
-      '\n姓名: ' + (p.name || '') +
-      '\n意向: ' + (intent.position || '') +
-      ' | 年限: ' + (p.years || '') + '年 | 学历: ' + (p.education || '')
+      'id: ' + attach.id + ' | 文件: ' + attach.file_name +
+      '\n意向: ' + (intent.position || '—') +
+      ' | 年限: ' + (p.years || '—') + '年 | 学历: ' + (p.education || '—')
   } catch (e) {
     txt.textContent = '读取失败'
     detail.textContent = String(e)
   }
 }
+
+/* ============================ 输入区自适应 ============================ */
+
+function autoResize() {
+  const ta = $('goal-input')
+  ta.style.height = 'auto'
+  ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
+}
+
+/* ============================ 初始化 ============================ */
 
 document.addEventListener('DOMContentLoaded', () => {
   connect()
@@ -510,6 +623,10 @@ document.addEventListener('DOMContentLoaded', () => {
   loadResumeStatus()
   setInterval(loadResumeStatus, 30000)
   loadRunConfig()
+
+  $('btn-settings').addEventListener('click', () => {
+    $('settings-drawer').classList.toggle('hidden')
+  })
   $('cfg-unattended').addEventListener('change', saveRunConfig)
   $('cfg-max-greetings').addEventListener('change', saveRunConfig)
   $('btn-go').addEventListener('click', start)
@@ -519,15 +636,19 @@ document.addEventListener('DOMContentLoaded', () => {
       start()
     }
   })
+  $('goal-input').addEventListener('input', autoResize)
   $('btn-stop').addEventListener('click', stop)
   $('btn-reset').addEventListener('click', resetSession)
-  $('btn-rescan').addEventListener('click', rescan)
+  $('btn-rescan').addEventListener('click', () => {
+    if (!connected) { addSysMsg('Server 未连接，无法扫描。'); return }
+    const idem = genIdem()
+    ws.send(JSON.stringify({ from: 'panel', type: 'resume_build_dir', idem }))
+  })
   $('btn-upload').addEventListener('click', uploadResume)
-  // 原生 HITL：用户对打招呼话术的三种确认（批准/修改后发/拒绝）
   $('btn-greet-approve').addEventListener('click', approveGreeting)
   $('btn-greet-edit').addEventListener('click', editSendGreeting)
   $('btn-greet-reject').addEventListener('click', rejectGreeting)
-  // 心跳：保持 WS 与 server 侧活跃探测
+
   setInterval(() => {
     if (connected) ws.send(JSON.stringify({ from: 'panel', type: 'keepalive' }))
   }, 20000)

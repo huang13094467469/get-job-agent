@@ -27,6 +27,8 @@ dependencies = [
     # psycopg3（异步）：langgraph-checkpoint-postgres 的 AsyncPostgresSaver 驱动（区别于业务库的 asyncpg）
     "psycopg[binary,pool]",
     "httpx",
+    # Playwright MCP 接入：官方浏览器自动化（--extension 连接用户浏览器），替代自研 Content Script 桥
+    "langchain-mcp-adapters",
     # M1 简历解析
     "python-docx",
     "pdfplumber",

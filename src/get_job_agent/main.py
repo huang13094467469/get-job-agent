@@ -33,11 +33,19 @@ async def _run_startup_resume_scan() -> None:
 async def lifespan(app: FastAPI):
     setup_logging()
     settings = get_settings()
+    from .agent.browser_mcp import close_browser_mcp, init_browser_mcp_tools
     from .agent.observability import init_tracing
     from .infra.checkpoint import close_checkpointer, init_checkpointer
     from .infra.postgres import ensure_resumes_table
 
+    # 点亮 LangSmith 云端追踪（LANGSMITH_TRACING=true 时，create_deep_agent 自动上报 trace）
     init_tracing(settings)
+    # 接入 Playwright MCP（--extension 连接用户已登录浏览器）。失败不阻断启动：
+    # agent 降级为仅业务工具（聊天/简历仍可用，浏览器操作缺失）。
+    try:
+        await init_browser_mcp_tools()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Playwright MCP 初始化异常（浏览器能力不可用）: {}", exc)
     # P0-1：初始化持久 Postgres checkpointer（单独建库 + 连接池 + setup 建表）。失败则降级——
     # harness.get_checkpointer() 兜底 MemorySaver，保证 Postgres 暂不可达时 server 仍能启动。
     try:
@@ -54,6 +62,7 @@ async def lifespan(app: FastAPI):
     logger.info("Get-Job Agent Server 启动 (v{})", __version__)
     asyncio.create_task(_run_startup_resume_scan())
     yield
+    await close_browser_mcp()
     await close_checkpointer()
     logger.info("Get-Job Agent Server 关闭")
 

@@ -62,7 +62,7 @@ def is_duplicate(state: Any, text: str) -> bool:
 
 
 def get_pending_job(state: Any) -> dict[str, Any] | None:
-    """读 compare 暂存的「判定达标、准备沟通」岗位（供 send_greeting 成功后升级为账本已打招呼）。"""
+    """读 compare 暂存的「判定达标、准备沟通」岗位（供 check_greeting/confirm_greeting_sent 使用）。"""
     p = (state or {}).get("pending_job") if hasattr(state, "get") else None
     return p if isinstance(p, dict) else None
 

@@ -54,19 +54,15 @@ class Settings(BaseSettings):
     server_host: str = "127.0.0.1"
     server_port: int = 8791
 
-    # ===== 运行观测 / 追踪（Tracing）=====
-    # LangSmith 云端追踪：默认关闭；开启后 create_deep_agent 的每一步（模型/工具/
-    # 耗时/token）自动上报，可在 LangSmith Studio 查看 trace 树并做评估。
+    # ===== 运行观测 / 追踪（LangSmith 官方云）=====
+    # 开启后 create_deep_agent 的每一步（模型/工具 I/O、耗时、token、子父顺序）经官方回调
+    # 自动上报到 smith.langchain.com，可在 LangSmith Studio 查看完整 trace 树。需联网。
     langsmith_tracing: bool = False
-    langsmith_api_key: str = ""
-    langsmith_project: str = "get-job-agent"
-    langsmith_endpoint: str = ""  # 留空用官方 smith.langchain.com；自建填 URL
-
-    # 本地结构化 trace：无外网/不外发时，把每次运行的事件以 JSONL 落盘供离线回放与评估。
-    trace_local_enabled: bool = True
-    trace_file: str = "logs/agent_traces.jsonl"
-    # 连续同类工具软错误达到该次数即升级为显式告警（定位「页面断开仍反复重试」这类问题）
-    trace_error_streak: int = 3
+    langsmith_api_key: str = ""                 # 填 .env 的 LANGSMITH_API_KEY
+    langsmith_project: str = "boss-agent"       # 与 .env 的 LANGSMITH_PROJECT 对应
+    langsmith_endpoint: str = ""                # 留空用官方 smith.langchain.com
+    # 连续同类工具软错误达到该次数即升级为显式告警
+    tool_error_streak: int = 3
 
     # ===== Agent 运行模式（自主程度）=====
     # confirm    = 每次发打招呼前暂停，等用户在面板确认（human-in-the-loop）

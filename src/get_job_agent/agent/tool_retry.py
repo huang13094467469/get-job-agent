@@ -1,11 +1,10 @@
 """浏览器工具调用重试中间件：对「瞬时连接类」软错误自动退避重试。
 
-deepagents/langchain 自带的 ToolRetryMiddleware 只在工具「抛异常」时重试；而本项目
-浏览器工具是把失败作为结构化结果（ok:false）返回的软错误，故需自定义一层 wrap_tool_call
-来识别并重试。安全策略（避免重复副作用）：
-- page_not_connected：动作根本没到达页面 → 任意浏览器工具都可重试（等页内 ~2s 重连）；
-- page_action_timeout：仅对「只读」调用重试（browser_snapshot / browser_act op=wait）；
-  写类（click/type/send_greeting/navigate/go_back）不重试，可能已生效或由其自身处理。
+浏览器操作已迁移到 Playwright MCP：工具失败多以文本错误返回（不抛异常），
+且 MCP 工具不会返回 {ok:false, error} 的结构化 JSON。本中间件：
+- 从工具返回文本中识别连接类瞬时错误（not connected / timeout 等关键词）；
+- 仅对「只读」MCP 工具（browser_snapshot / browser_find）重试；
+  写类（click/type/press_key/navigate）不重试，可能已生效。
 """
 
 from __future__ import annotations
@@ -19,22 +18,36 @@ from langchain.agents.middleware import AgentMiddleware, ToolCallRequest
 
 from ..core.logs import logger
 
-# 纯读、可安全超时重试的浏览器工具 / op
-_TIMEOUT_RETRYABLE_TOOLS = {"browser_snapshot"}
-_TIMEOUT_RETRYABLE_ACT_OPS = {"wait"}
+# 纯读、可安全超时重试的浏览器工具
+_TIMEOUT_RETRYABLE_TOOLS = {"browser_snapshot", "browser_find"}
+
+# 连接类瞬时错误的文本特征（Playwright MCP 未连/页面未开/超时等）
+_TRANSIENT_MARKERS = (
+    "not connected",
+    "no connection",
+    "browser is not connected",
+    "timed out",
+    "timeout",
+    "connection refused",
+    "target page, context or browser has been closed",
+)
 
 
 def _soft_error(result: Any) -> str:
-    """从工具返回的 ToolMessage 里取软错误码；非结构化 ok:false 则返回 ''。"""
+    """从工具返回里取软错误码：优先结构化 {ok:false,error}，否则按文本特征识别。"""
     content = getattr(result, "content", None)
     if not isinstance(content, str):
         return ""
     try:
         obj = json.loads(content)
+        if isinstance(obj, dict) and obj.get("ok") is False:
+            return str(obj.get("error") or "")
     except Exception:  # noqa: BLE001
-        return ""
-    if isinstance(obj, dict) and obj.get("ok") is False:
-        return str(obj.get("error") or "")
+        pass
+    low = content.lower()
+    for marker in _TRANSIENT_MARKERS:
+        if marker in low:
+            return "transient:" + marker
     return ""
 
 
@@ -50,12 +63,8 @@ class BrowserToolRetryMiddleware(AgentMiddleware):
     def _should_retry(self, tool: str, args: dict, err: str) -> bool:
         if not err:
             return False
-        if err.startswith("page_not_connected"):
-            return True  # 未到达页面，任何浏览器工具都可安全重试
-        if err == "page_action_timeout":
-            if tool in _TIMEOUT_RETRYABLE_TOOLS:
-                return True
-            return tool == "browser_act" and str(args.get("op")) in _TIMEOUT_RETRYABLE_ACT_OPS
+        if err.startswith("transient:"):
+            return tool in _TIMEOUT_RETRYABLE_TOOLS  # 只读工具才重试，避免重复副作用
         return False
 
     async def awrap_tool_call(

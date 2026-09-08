@@ -126,10 +126,12 @@ _RECURSION_LIMIT = 256
 _DONE_SENTINEL = "【求职任务结束】"
 # 自动续跑时注入的推进指令（同一 thread、携带历史）
 _CONTINUE_MSG = (
-    "继续按 SOP 处理下一个达标岗位：先回岗位列表页（go_back 或 navigate 到 "
-    "https://www.zhipin.com/web/geek/jobs），等页面稳定后 snapshot，"
+    "继续按 SOP 处理下一个达标岗位：先回岗位列表页（browser_navigate 到 "
+    "https://www.zhipin.com/web/geek/jobs），等页面稳定后 browser_snapshot，"
     "跳过已沟通过（contacted=true / 【已沟通】）的岗位，对下一个匹配达标岗位走完整闭环"
-    "（立即沟通→若弹框点【继续沟通】→进入聊天页→生成话术并 send_greeting 发送），然后继续找下一个。"
+    "（browser_click 立即沟通→若弹框点【继续沟通】→进入聊天页→拟话术→check_greeting 预检→"
+    "browser_click/type/press_key 发送→browser_snapshot 确认清空→confirm_greeting_sent 登记），"
+    "然后继续找下一个。"
     "**不要只返回筛选清单就停**；只有当列表（含翻页）确无更多达标岗位时，"
     "才输出“【求职任务结束】”并简要总结已投递岗位。"
 )
@@ -137,9 +139,18 @@ _CONTINUE_MSG = (
 # idem -> 运行中的浏览器 Agent 任务（用于用户终止）
 _agent_tasks: dict[str, asyncio.Task] = {}
 
+# 线程 key（client_id 或 ws 兜底） -> 当前正在运行的最新 idem。
+# 新 agent_go 进来时据此打断该连接在跑的旧任务，保证“随时可发新消息、自动顶掉旧任务”
+# （连续对话：无需等上一个浏览器任务跑完/停止）。线程 key 与 _panel_threads 同源，
+# 面板重连后按 client_id 仍能匹配到旧任务并打断。
+_panel_running: dict[str, str] = {}
+
 # 面板连接 -> 会话 thread_id：同一连接的多轮 agent_go/resume 共享同一 LangGraph 线程，
 # 状态由 checkpointer 按 thread_id 持久化（跨轮对话 / 原生 HITL 暂停恢复）。
-_panel_threads: dict[int, str] = {}
+# 线程 key 优先用「面板持久 client_id」（面板刷新/扩展重载后不变，保证连续对话），
+# 未上报 client_id 的旧面板回退用 ws 对象 id。
+_panel_clients: dict[int, str] = {}  # id(ws) -> 面板持久 client_id
+_panel_threads: dict[str, str] = {}  # client_id 或 ws 兜底 key -> thread_id
 
 
 def _agent_key(idem: str, ws: WebSocket) -> str:
@@ -147,13 +158,31 @@ def _agent_key(idem: str, ws: WebSocket) -> str:
     return idem or f"ws_{id(ws)}"
 
 
+def _panel_key(ws: WebSocket) -> str:
+    """面板的任务归属键（用于打断旧任务）：优先用持久 client_id，缺失时以 ws 兜底。"""
+    return _panel_clients.get(id(ws)) or f"ws_{id(ws)}"
+
+
+def _cancel_panel_task(ws: WebSocket) -> None:
+    """打断该面板连接上正在运行的旧任务（如有）。新消息到来时调用，实现连续对话自动顶替。"""
+    key = _panel_key(ws)
+    prev_idem = _panel_running.get(key)
+    if not prev_idem:
+        return
+    prev = _agent_tasks.pop(_agent_key(prev_idem, ws), None)
+    if prev and not prev.done():
+        prev.cancel()
+        logger.info("新任务打断旧任务 thread_key={} 旧idem={}", key, prev_idem)
+
+
 def _get_thread(ws: WebSocket, *, reset: bool = False) -> str:
     """取（或按需新建）本面板连接的会话 thread_id。reset=True 强制换新线程（清空会话）。
 
     换新 thread 即丢弃跨轮历史：新 thread 在 checkpointer 里无状态，护栏计数（greeting_count /
     sent_hashes / pending_job）自然归零，无需再显式 reset 全局 dict（已迁入 state，P0-2）。
+    线程按持久 client_id 绑定：面板重载/WS 重连后仍续用同一 thread，保持连续对话。
     """
-    key = id(ws)
+    key = _panel_clients.get(id(ws)) or f"ws_{id(ws)}"
     if reset:
         _panel_threads.pop(key, None)
     tid = _panel_threads.get(key)
@@ -299,6 +328,7 @@ async def _stream_agent_once(
         settings if run_mode == str(settings.agent_mode).lower()
         else settings.model_copy(update={"agent_mode": run_mode})
     )
+
     agent = get_browser_agent(run_settings)
     is_resume = isinstance(inputs, Command)
     cfg = ctx_config(
@@ -466,8 +496,16 @@ async def _run_agent_turn(*, start_inputs: Any, thread_id: str, idem: str, ws: W
     except asyncio.CancelledError:
         logger.info("agent 运行被终止 idem={}", idem)
         await _send_turn_result(ws, idem, ok=False, output="", error="已由用户停止", stopped=True)
+    except Exception as exc:  # noqa: BLE001
+        # 兜底：任何未预期异常都必须回执 agent_go_result，否则面板 running 永远为 true，
+        # 后续消息会被误判为「运行中」而排队卡死（用户反馈的 bug）。
+        logger.exception("agent 运行异常（未兜底回执） idem={}", idem)
+        await _send_turn_result(ws, idem, ok=False, error=f"运行异常: {exc}")
     finally:
         _agent_tasks.pop(key, None)
+        # 若该 connection 的最新运行确实落到本任务，则清空 running 标记，放行下一次发送
+        if _panel_running.get(_panel_key(ws)) == idem:
+            _panel_running.pop(_panel_key(ws), None)
 
 
 async def _classify_intent(goal: str) -> str:
@@ -526,6 +564,8 @@ async def _register_agent_go(hub, msg: dict[str, Any], idem: str, websocket) -> 
     cap = max(0, cap)
 
     thread_id = _get_thread(websocket)
+    # 连续对话：新消息直接顶掉本面板在跑的旧任务（浏览器自动化可能长时间续跑，不能让用户干等）
+    _cancel_panel_task(websocket)
     # 意图识别：找工作/投递 → 允许无人值守自动续跑；对话/咨询 → 只跑一段，避免被诱导去投递
     intent = await _classify_intent(goal)
     logger.info("agent_go 受理 thread={} mode={} max_greetings={} intent={} goal={}",
@@ -547,6 +587,7 @@ async def _register_agent_go(hub, msg: dict[str, Any], idem: str, websocket) -> 
         _run_agent_turn(start_inputs=start_inputs, thread_id=thread_id, idem=idem, ws=websocket)
     )
     _agent_tasks[_agent_key(idem, websocket)] = task
+    _panel_running[_panel_key(websocket)] = idem
 
 
 def _normalize_decisions(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -569,7 +610,7 @@ def _normalize_decisions(payload: dict[str, Any]) -> list[dict[str, Any]]:
             text = str(d.get("text") or d.get("edited_text") or "").strip()
             decisions.append({
                 "type": "edit",
-                "edited_action": {"name": "send_greeting", "args": {"text": text}},
+                "edited_action": {"name": "check_greeting", "args": {"text": text}},
             })
         elif dtype == "reject":
             rmsg = d.get("message") or "用户拒绝发送，请跳过本岗位，继续下一个或结束。"
@@ -584,22 +625,26 @@ def _normalize_decisions(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _register_agent_resume(idem: str, ws: WebSocket, payload: dict[str, Any]) -> None:
     """面板对 HITL 中断的确认（仅 confirm 模式）→ 以 Command(resume) 恢复同一 thread。
 
-    投递上限已由 send_greeting 工具（runtime_guard）统一把关，这里不再重复计数。
+    投递上限已由 check_greeting（护栏预检）+ confirm_greeting_sent（发送后登记）把关。
     """
     thread_id = _get_thread(ws)
     decisions = _normalize_decisions(payload)
     logger.info("agent_resume thread={} decisions={}", thread_id, decisions)
+    _cancel_panel_task(ws)
     start_inputs = Command(resume={"decisions": decisions})
     task = asyncio.create_task(
         _run_agent_turn(start_inputs=start_inputs, thread_id=thread_id, idem=idem, ws=ws)
     )
     _agent_tasks[_agent_key(idem, ws)] = task
+    _panel_running[_panel_key(ws)] = idem
 
 
 def _register_stop_agent(idem: str, ws: WebSocket) -> None:
     """终止指定 idem 正在运行的浏览器 Agent。"""
     key = _agent_key(idem, ws)
     task = _agent_tasks.pop(key, None)
+    if _panel_running.get(_panel_key(ws)) == idem:
+        _panel_running.pop(_panel_key(ws), None)
     if task and not task.done():
         task.cancel()
         _push_agent_status(ws, idem, {"status": "stopping"})
@@ -613,6 +658,7 @@ def _register_reset_agent(idem: str, ws: WebSocket) -> None:
     task = _agent_tasks.pop(key, None)
     if task and not task.done():
         task.cancel()
+    _panel_running.pop(_panel_key(ws), None)  # 清重置后本面板无在跑任务，放行后续发送
     _get_thread(ws, reset=True)  # 生成新 thread_id，并清零旧线程的投递计数
     logger.info("会话已清空（新线程） idem={}", idem)
     asyncio.create_task(hub._send(ws, {
@@ -666,6 +712,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 elif msg_from == "panel":
                     role = "panel"
                     hub.add_panel(websocket)
+                    # 绑定面板持久 client_id：线程按此复用（面板重载/重连后连续对话）
+                    cid = str(msg.get("client_id") or "").strip()
+                    if cid:
+                        _panel_clients[id(websocket)] = cid
                     await hub._send(websocket, {
                         "from": "server", "type": "registered", "role": "panel",
                     })
@@ -815,7 +865,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 )
         elif role == "panel":
             hub.remove_panel(websocket)
-            _panel_threads.pop(id(websocket), None)  # 释放会话线程映射
+            # 只清理「连接 -> client_id」映射；线程本身按 client_id 保留，面板重连后继续复用
+            # （只有 reset_agent 才换新线程）。旧逻辑按 id(ws) 弹线程会切断连续对话，已废弃。
+            _panel_clients.pop(id(websocket), None)
 
 
 __all__ = ["router"]

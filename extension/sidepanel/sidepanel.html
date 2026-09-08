@@ -10,76 +10,80 @@
     <header class="topbar">
       <div class="brand">
         <span class="logo">G</span>
-        <div>
+        <div class="brand-text">
           <div class="title">智能求职助手</div>
           <div class="subtitle">Get-Job Agent</div>
         </div>
       </div>
+      <div class="topbar-right">
+        <span class="chip" title="Agent Server 连接状态">
+          <span class="dot idle" id="dot-server"></span><span id="txt-server">未连接</span>
+        </span>
+        <span class="chip" title="Boss 页面连接状态">
+          <span class="dot idle" id="dot-page"></span><span id="txt-page">未连接</span>
+        </span>
+        <button id="btn-settings" class="icon-btn" type="button" title="设置与简历">⚙</button>
+      </div>
     </header>
 
-    <section class="status">
-      <div class="row">
-        <span class="label">Agent Server</span>
-        <span class="value"><span class="dot idle" id="dot-server"></span><span id="txt-server">未连接</span></span>
+    <section id="settings-drawer" class="drawer hidden">
+      <div class="drawer-group">
+        <div class="group-label">运行配置</div>
+        <label class="cfg-toggle" for="cfg-unattended" title="开启后自动发送打招呼并自动续跑">
+          <input type="checkbox" id="cfg-unattended" /> 无人值守（自动发送 + 续跑）
+        </label>
+        <label class="cfg-cap">
+          投递上限
+          <input type="number" id="cfg-max-greetings" min="0" step="1" value="0" title="0=不限；达到后自动停止" />
+          <span class="hint">0=不限</span>
+        </label>
       </div>
-      <div class="row">
-        <span class="label">当前 Get-Job 页</span>
-        <span class="value"><span class="dot idle" id="dot-page"></span><span id="txt-page">未连接</span></span>
+      <div class="drawer-group">
+        <div class="group-label">简历（PDF / DOCX，同名自动替换）</div>
+        <div class="resume-status"><span id="txt-resume">—</span></div>
+        <div class="detail" id="resume-detail"></div>
+        <div class="resume-actions">
+          <input type="file" id="resume-file" accept=".pdf,.docx" />
+          <button id="btn-upload" class="btn small" type="button">上传解析</button>
+          <button id="btn-rescan" class="btn small" type="button">重扫目录</button>
+        </div>
+        <div id="upload-result" class="result hidden"></div>
       </div>
     </section>
 
-    <section class="resume-status">
-      <div class="row">
-        <span class="label">简历状态</span>
-        <span class="value" id="txt-resume">—</span>
-      </div>
-      <div id="resume-detail" class="detail"></div>
-    </section>
+    <main class="chatbox">
+      <div id="chat" class="messages"></div>
 
-    <section class="resume">
-      <div class="block-label">上传简历（PDF/DOCX，同名自动替换更新）</div>
-      <input type="file" id="resume-file" accept=".pdf,.docx" />
-      <button id="btn-upload" class="btn primary" type="button">上传并解析</button>
-      <div id="upload-result" class="result hidden"></div>
-      <button id="btn-rescan" class="btn" type="button">重新扫描简历</button>
-      <div id="resume-result" class="result hidden"></div>
-    </section>
-
-    <section class="chatbox">
       <div class="chatbar">
         <span class="chat-status">
           <span class="dot idle" id="dot-agent"></span>
           <span id="txt-status">空闲</span>
         </span>
-        <label class="cfg-toggle" for="cfg-unattended" title="无人值守：自动发送+自动续跑">
-          <input type="checkbox" id="cfg-unattended" /> 无人值守
-        </label>
-        <span class="cfg-cap">
-          投递上限
-          <input type="number" id="cfg-max-greetings" min="0" step="1" value="0" title="0=不限，达到后自动停止" />
-        </span>
       </div>
-      <div id="chat" class="messages"></div>
+
       <div class="chatinput">
-        <textarea id="goal-input" rows="2" placeholder="输入你想让 Agent 做的事，回车发送（Shift+Enter 换行）"></textarea>
+        <textarea id="goal-input" rows="1" placeholder="和 Agent 说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
         <div class="chatbtns">
           <button id="btn-go" class="btn primary" type="button">发送</button>
           <button id="btn-stop" class="btn danger" type="button" disabled>停止</button>
-          <button id="btn-reset" class="btn" type="button">清空会话</button>
+          <button id="btn-reset" class="btn ghost" type="button">清空</button>
         </div>
       </div>
-    </section>
+    </main>
 
-    <section id="greeting-section" class="greeting hidden">
-      <div class="block-label">待确认打招呼话术（发送前需你批准）</div>
-      <textarea id="greeting-text" rows="4"></textarea>
-      <div class="greeting-actions">
-        <button id="btn-greet-approve" class="btn primary" type="button">确认发送</button>
-        <button id="btn-greet-edit" class="btn" type="button">发送修改后话术</button>
-        <button id="btn-greet-reject" class="btn danger" type="button">拒绝</button>
+    <div id="greeting-overlay" class="overlay hidden">
+      <div class="dialog">
+        <div class="dialog-title">待确认打招呼话术</div>
+        <div class="dialog-sub">发送前需要你批准（confirm 模式）</div>
+        <textarea id="greeting-text" rows="5" placeholder="Agent 生成的打招呼话术…"></textarea>
+        <div class="dialog-actions">
+          <button id="btn-greet-reject" class="btn danger" type="button">拒绝</button>
+          <button id="btn-greet-edit" class="btn" type="button">修改发送</button>
+          <button id="btn-greet-approve" class="btn primary" type="button">确认发送</button>
+        </div>
+        <div id="greeting-result" class="result hidden"></div>
       </div>
-      <div id="greeting-result" class="result hidden"></div>
-    </section>
+    </div>
 
     <script src="sidepanel.js"></script>
   </body>

@@ -80,6 +80,7 @@ register_harness_profile(
 
 # 精简系统提示词：身份/意图分流/风控由 memory(AGENTS.md) 常驻承载；
 # 逐岗求职完整 SOP 已迁入 skill(boss-job-hunt)，识别到找工作意图时按需加载（AGENTS.md 会指示 read_file）。
+# 浏览器操作经 Playwright MCP 官方工具（browser_snapshot/click/type/press_key/navigate/wait_for/find）。
 BROWSER_SYSTEM_PROMPT = (
     "你是 Get-Job 求职助手：既能陪用户聊天、答疑、分析页面/简历/岗位，也能在用户明确要求时"
     "替他在 Boss 直聘上逐岗投递打招呼。\n"
@@ -88,9 +89,17 @@ BROWSER_SYSTEM_PROMPT = (
     "然后用 read_file 加载 skill /skills/boss-job-hunt/SKILL.md，严格按其 SOP 逐岗执行，"
     "用 write_todos 建立任务清单约束进度，直到输出【求职任务结束】。\n"
     "- 其余一律正常对话：需要时可看页面/读简历/做单岗比对来辅助回答，但不要自动进入投递流程、"
-    "不要主动调用 start_chat/send_greeting。意图拿不准先澄清，绝不贸然投递。\n"
-    "铁律：所有真实对外发送只能调用 send_greeting 工具（confirm 模式下它会暂停交用户确认，"
-    "unattended 模式下自动发送）；不要臆测发送结果，一律以工具返回为准。"
+    "不要主动用浏览器操作去沟通/发送。意图拿不准先澄清，绝不贸然投递。\n"
+    "浏览器操作规范（Playwright MCP 官方工具，元素用 ref 定位）："
+    "browser_snapshot 看页面（元素带 ref）、browser_find 在长列表中按文本定位、"
+    "browser_click/type/hover/drag/press_key 交互、browser_fill_form/select_option 填表/选下拉、"
+    "browser_navigate/navigate_back 跳转、browser_tabs 管理标签页、"
+    "browser_handle_dialog 处理弹框、browser_file_upload 上传、browser_take_screenshot 截图、"
+    "browser_console_messages/network_requests/network_request 读控制台/网络、"
+    "browser_evaluate/run_code_unsafe 执行 JS（如滚动无限列表、读 SPA 状态）、"
+    "browser_wait_for 等待、browser_close/resize 收尾。\n"
+    "铁律：打招呼前必须先调 check_greeting 预检（confirm 模式会暂停等你确认），"
+    "发送后用页面状态确认成功再调 confirm_greeting_sent 登记；不要臆测发送结果。"
 )
 
 
@@ -230,9 +239,10 @@ def ctx_config(
     return cfg
 
 
-# 需要人工确认的写类工具：发送打招呼话术前暂停，允许用户批准/修改/拒绝。
+# 需要人工确认的写类环节：confirm 模式下「打招呼预检」后暂停，允许用户批准/修改话术/拒绝。
+# （发送动作已由模型用 MCP 浏览器工具完成；check_greeting 是发送前的确认挂点）
 INTERRUPT_ON: dict[str, Any] = {
-    "send_greeting": {"allowed_decisions": ["approve", "edit", "reject"]},
+    "check_greeting": {"allowed_decisions": ["approve", "edit", "reject"]},
 }
 
 # 编译图跨会话复用（图本身无会话状态，状态全在 checkpointer 按 thread_id 隔离）。
@@ -329,25 +339,36 @@ def _build_backend() -> CompositeBackend:
     )
 
 
+def _browser_tools() -> list:
+    """Agent 可见工具 = Playwright MCP 浏览器工具 + 求职业务工具。
+
+    浏览器工具来自 lifespan 初始化的 MCP 缓存（见 agent.browser_mcp）；MCP 未就绪
+    （扩展未连/失败）时仅业务工具，agent 仍可做聊天/简历类任务，浏览器操作会缺。
+    """
+    from .browser_mcp import get_cached_browser_tools
+    from .tools import BROWSER_TOOLS
+
+    return [*get_cached_browser_tools(), *BROWSER_TOOLS]
+
+
 def _build_browser_agent(settings: Settings):
     """按 deepagents 标准构建浏览器 Agent（持久 checkpointer + HITL + memory + skills）。"""
     from deepagents import create_deep_agent
 
-    from .tools import BROWSER_TOOLS
-
     model = build_model(settings)
     backend = _build_backend()
-    # unattended（无人值守）不挂发送前暂停，send_greeting 自动发送；confirm 才启用 HITL。
+    tools = _browser_tools()
+    # unattended（无人值守）不挂发送前暂停，check_greeting 直接通过；confirm 才启用 HITL。
     unattended = str(getattr(settings, "agent_mode", "confirm")).lower() != "confirm"
     interrupt_on = None if unattended else INTERRUPT_ON
     logger.info(
         "构建 DeepAgent 工具={} mode={} interrupt={} memory={} skills={} backend=Composite res={}",
-        len(BROWSER_TOOLS), "unattended" if unattended else "confirm",
+        len(tools), "unattended" if unattended else "confirm",
         bool(interrupt_on), MEMORY_FILES, SKILL_DIRS, AGENT_RESOURCES_DIR,
     )
     return create_deep_agent(
         model=model,
-        tools=BROWSER_TOOLS,
+        tools=tools,
         system_prompt=BROWSER_SYSTEM_PROMPT,
         checkpointer=get_checkpointer(),
         interrupt_on=interrupt_on,
