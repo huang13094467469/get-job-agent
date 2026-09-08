@@ -48,19 +48,17 @@ _ENC = tiktoken.get_encoding("cl100k_base")
 # harness.py 位于 src/get_job_agent/agent/，parents[3] 即项目根目录。
 _SERVER_DIR = Path(__file__).resolve().parents[3]  # 项目根目录
 AGENT_RESOURCES_DIR = _SERVER_DIR / "agent_resources"
-MEMORY_FILES = ["/AGENTS.md", "/memories/lessons.md"]  # 常驻注入：身份+SOP+约束 + agent 自更新经验
+MEMORY_FILES = ["/AGENTS.md"]  # 常驻注入：身份 + SOP + 约束（操作经验已停用）
 SKILL_DIRS = ["/skills/"]              # 按需加载：进阶打法与异常处置
 
-# 可写长期记忆自更新（deepagents 标准 self-improvement）：agent 用 edit_file/write_file
-# 只能写 /memories/ 下（lessons）；AGENTS.md 与 skills 只读（deny 其余写），防改坏 SOP。
+# 写权限全局禁写：AGENTS.md、skills 与记忆均只读，防改坏 SOP（操作经验/自更新记忆已停用）。
 PERMISSIONS = [
-    FilesystemPermission(operations=["write"], paths=["/memories/**"], mode="allow"),
     FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
 ]
 
 # ---- 工具面收窄 + 无 subagent 的正规开关（对齐 subagents.md / profiles.md）----
 # 保留 ls/read_file：SkillsMiddleware 需要 read_file 按需读 SKILL.md 正文（level-2）。
-# 保留 write_file/edit_file：供 agent 自更新长期记忆（见 PERMISSIONS，实际只能写 /memories/）。
+# 保留 write_file/edit_file：随工具集保留（见 PERMISSIONS，写权限已全局禁写）。
 # 排除 delete/glob/grep/execute：本 Agent 不需删文件/搜索/执行。
 # P1-4：「无 subagent」改用官方正规开关
 #   general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False) + 不传同步 subagents
@@ -84,22 +82,17 @@ register_harness_profile(
 BROWSER_SYSTEM_PROMPT = (
     "你是 Get-Job 求职助手：既能陪用户聊天、答疑、分析页面/简历/岗位，也能在用户明确要求时"
     "替他在 Boss 直聘上逐岗投递打招呼。\n"
-    "先判断意图（找工作/投递 vs 聊天/咨询/分析）再行动：\n"
-    "- 明确要找工作/投递 → 先向用户确认求职意向（岗位方向/城市/期望薪资，齐了再动手），"
-    "然后用 read_file 加载 skill /skills/boss-job-hunt/SKILL.md，严格按其 SOP 逐岗执行，"
-    "用 write_todos 建立任务清单约束进度，直到输出【求职任务结束】。\n"
-    "- 其余一律正常对话：需要时可看页面/读简历/做单岗比对来辅助回答，但不要自动进入投递流程、"
-    "不要主动用浏览器操作去沟通/发送。意图拿不准先澄清，绝不贸然投递。\n"
-    "浏览器操作规范（Playwright MCP 官方工具，元素用 ref 定位）："
+    "先判断意图（找工作/投递 vs 聊天/咨询/分析）再行动；求职意向确认、逐岗 SOP（明确找工作 → "
+    "read_file 加载 skill /skills/boss-job-hunt/SKILL.md 严格按 SOP 执行、write_todos 建立任务清单"
+    "约束进度、直到输出【求职任务结束】）、过目清单、打招呼铁律与风控约束，均以常驻记忆 AGENTS.md 为准。\n"
+    "浏览器操作由 Playwright MCP 官方工具驱动，元素用 ref 定位："
     "browser_snapshot 看页面（元素带 ref）、browser_find 在长列表中按文本定位、"
     "browser_click/type/hover/drag/press_key 交互、browser_fill_form/select_option 填表/选下拉、"
     "browser_navigate/navigate_back 跳转、browser_tabs 管理标签页、"
     "browser_handle_dialog 处理弹框、browser_file_upload 上传、browser_take_screenshot 截图、"
     "browser_console_messages/network_requests/network_request 读控制台/网络、"
     "browser_evaluate/run_code_unsafe 执行 JS（如滚动无限列表、读 SPA 状态）、"
-    "browser_wait_for 等待、browser_close/resize 收尾。\n"
-    "铁律：打招呼前必须先调 check_greeting 预检（confirm 模式会暂停等你确认），"
-    "发送后用页面状态确认成功再调 confirm_greeting_sent 登记；不要臆测发送结果。"
+    "browser_wait_for 等待、browser_close/resize 收尾。"
 )
 
 
