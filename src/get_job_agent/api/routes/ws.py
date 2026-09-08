@@ -465,7 +465,7 @@ async def _run_agent_turn(*, start_inputs: Any, thread_id: str, idem: str, ws: W
             final = st.get("final") or final
             if st["failed"]:
                 await _send_turn_result(ws, idem, ok=False, error=final or "运行异常",
-                                        sent=_state_greeting_count(agent, thread_id))
+                                        sent=await _state_greeting_count(agent, thread_id))
                 return
             if st["interrupted"]:
                 return  # confirm 已推中断事件，等面板 agent_resume
@@ -473,13 +473,13 @@ async def _run_agent_turn(*, start_inputs: Any, thread_id: str, idem: str, ws: W
                 # 非找工作任务（聊天/咨询），或 confirm 模式：跑完一段即返回。
                 # 聊天不续跑：即使无人值守也不注入找工作推进指令，防止误投递。
                 await _send_turn_result(ws, idem, ok=True, output=final,
-                                        sent=_state_greeting_count(agent, thread_id))
+                                        sent=await _state_greeting_count(agent, thread_id))
                 return
             # unattended：判定是否自动续跑
             if _DONE_SENTINEL in final:
                 await _send_turn_result(ws, idem, ok=True,
                                         output=final.replace(_DONE_SENTINEL, "").strip(),
-                                        sent=_state_greeting_count(agent, thread_id))
+                                        sent=await _state_greeting_count(agent, thread_id))
                 return
             # 投递上限从 checkpointer 持久 state 读（替代进程级全局计数，评估 P0-2）
             sent = await _state_greeting_count(agent, thread_id)

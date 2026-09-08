@@ -18,6 +18,12 @@ from typing import Any
 
 from ..core.logs import logger
 
+# MCP 连接重试：--extension 模式握手很吃"浏览器恰好就绪"的时机（扩展 service worker 未常驻、
+# npx 拉包慢都会导致列工具阶段偶发 TaskGroup 失败）。失败后延迟重连，能大幅压低随机失败率。
+_MCP_CONNECT_ATTEMPTS: int = 3          # 总尝试次数（含首次）
+_MCP_CONNECT_RETRY_DELAY: float = 3.0   # 每次失败后重试前的等待秒数（幂等等待）
+_MCP_CONNECT_TIMEOUT: float = 60.0      # 单次握手/取工具超时
+
 # 接入的 MCP 工具：Playwright MCP 的**完整核心工具集**（core，始终启用，见官方
 # introduction.mdx「Available Tools → Core」）。按用途分组，覆盖：导航 / 快照定位 /
 # 点击输入 / 表单 / 键盘鼠标 / 截图 / 标签页 / 对话框 / 文件上传 / 控制台 / 网络 / 执行 / 等待。
@@ -61,14 +67,14 @@ ALLOWED_MCP_TOOLS: frozenset[str] = frozenset({
 })
 
 # Playwright MCP 服务器配置：npx 启动 + --extension 连接用户已登录浏览器（扩展模式）。
-# 默认连接「最后使用过的、装有该扩展的浏览器 profile」；装有扩展的浏览器不止一个时，
-# 可加 --profile-dir-name=Profile N 指定（Edge 地址栏 edge://version 可查当前 profile 名）。
-# 若未装扩展，可回退 CDP 模式：args 改为 ["@playwright/mcp@latest", "--cdp-endpoint=msedge"]。
+# 本机扩展装在 Edge 的 Default profile：用 --browser=msedge 强制落 Edge，--profile-dir-name=Default
+# 指定 profile（= edge://version 中“配置文件路径”的最后一个目录名，这里是 Default），
+# 避免扩展模式误去 Chrome 目录找扩展。若日后换了浏览器/profile，同步改这两个值即可。
 _MCP_SERVERS: dict[str, dict[str, Any]] = {
     "playwright": {
         "transport": "stdio",
         "command": "npx",
-        "args": ["@playwright/mcp@latest", "--extension"],
+        "args": ["@playwright/mcp@latest", "--extension", "--browser=msedge", "--profile-dir-name=Default"],
     },
 }
 
@@ -76,29 +82,64 @@ _tools_cache: list[Any] | None = None
 _client: Any = None
 
 
+async def _connect_once() -> list[Any]:
+    """单次连接 Playwright MCP 并返回全部（未过滤）工具；失败抛异常由调用方重试。"""
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    global _client
+    client = MultiServerMCPClient(_MCP_SERVERS)
+    _client = client
+    # 加整体超时：MCP 服务器启动/握手慢（npx 拉包、扩展等待）时不能阻塞 server 启动，
+    # 超时按「未就绪」降级，浏览器能力缺失但 server 照常服务。
+    return await asyncio.wait_for(client.get_tools(), timeout=_MCP_CONNECT_TIMEOUT)
+
+
 async def init_browser_mcp_tools() -> list[Any]:
     """连接 Playwright MCP 并返回按需选定的工具列表（进程内缓存）。
 
     连接失败（未装 Playwright 扩展 / 浏览器未开 / npx 拉包失败等）时降级返回空列表，
     由调用方决定：无浏览器能力的 agent 仍可做聊天/简历类任务。
+
+    --extension 握手偶发失败，故失败后延迟重试几次（每次新建 client），再降级。
     """
     global _tools_cache, _client
     if _tools_cache is not None:
         return _tools_cache
-    from langchain_mcp_adapters.client import MultiServerMCPClient
 
-    client = MultiServerMCPClient(_MCP_SERVERS)
-    _client = client
-    try:
-        # 加整体超时：MCP 服务器启动/握手慢（npx 拉包、扩展等待）时不能阻塞 server 启动，
-        # 超时按「未就绪」降级，浏览器能力缺失但 server 照常服务。
-        all_tools = await asyncio.wait_for(client.get_tools(), timeout=60.0)
-    except TimeoutError:
-        logger.warning("Playwright MCP 连接超时（60s），浏览器能力降级为不可用")
+    all_tools: list[Any] = []
+    last_exc: Exception | None = None
+    for attempt in range(1, _MCP_CONNECT_ATTEMPTS + 1):
+        try:
+            all_tools = await _connect_once()
+            last_exc = None
+            if all_tools:
+                break
+        except TimeoutError as exc:
+            last_exc = exc
+            logger.warning(
+                "Playwright MCP 连接超时（{}s，第 {}/{} 次）", _MCP_CONNECT_TIMEOUT,
+                attempt, _MCP_CONNECT_ATTEMPTS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.warning(
+                "Playwright MCP 连接失败（第 {}/{} 次）: {}", attempt,
+                _MCP_CONNECT_ATTEMPTS, exc,
+            )
+        if attempt < _MCP_CONNECT_ATTEMPTS:
+            logger.info("Playwright MCP 将于 {}s 后重试...", _MCP_CONNECT_RETRY_DELAY)
+            await asyncio.sleep(_MCP_CONNECT_RETRY_DELAY)
+
+    if last_exc is not None:
+        # 全部尝试均失败：清理当前 client，避免留存损坏的 stdio 子进程句柄。
+        await close_browser_mcp()
+        logger.warning("Playwright MCP 全部 {} 次连接失败，浏览器能力降级为不可用",
+                       _MCP_CONNECT_ATTEMPTS)
         all_tools = []
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Playwright MCP 连接失败（浏览器扩展未连接？）: {}", exc)
+    elif not all_tools:
+        # 连上了但没拿到任何工具（理论兜底），同样按不可用处理。
         all_tools = []
+
     picked = [t for t in all_tools if getattr(t, "name", "") in ALLOWED_MCP_TOOLS]
     missing = ALLOWED_MCP_TOOLS - {getattr(t, "name", "") for t in picked}
     if missing:
