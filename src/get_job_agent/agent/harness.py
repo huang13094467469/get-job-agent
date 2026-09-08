@@ -76,15 +76,12 @@ register_harness_profile(
     ),
 )
 
-# 精简系统提示词：身份/意图分流/风控由 memory(AGENTS.md) 常驻承载；
-# 逐岗求职完整 SOP 已迁入 skill(boss-job-hunt)，识别到找工作意图时按需加载（AGENTS.md 会指示 read_file）。
+# 精简系统提示词：身份/意图分流/SOP/过目清单/风控由常驻记忆 AGENTS.md 承载（MemoryMiddleware 必然注入），
+# 系统提示词只保留浏览器工具清单（AGENTS.md 未承载）+ 一行指向，避免重复。
 # 浏览器操作经 Playwright MCP 官方工具（browser_snapshot/click/type/press_key/navigate/wait_for/find）。
 BROWSER_SYSTEM_PROMPT = (
-    "你是 Get-Job 求职助手：既能陪用户聊天、答疑、分析页面/简历/岗位，也能在用户明确要求时"
-    "替他在 Boss 直聘上逐岗投递打招呼。\n"
-    "先判断意图（找工作/投递 vs 聊天/咨询/分析）再行动；求职意向确认、逐岗 SOP（明确找工作 → "
-    "read_file 加载 skill /skills/boss-job-hunt/SKILL.md 严格按 SOP 执行、write_todos 建立任务清单"
-    "约束进度、直到输出【求职任务结束】）、过目清单、打招呼铁律与风控约束，均以常驻记忆 AGENTS.md 为准。\n"
+    "你是 Get-Job 求职助手。身份、意图分流（找工作/投递 vs 聊天/咨询/分析）、逐岗 SOP、"
+    "过目清单与风控约束均以常驻记忆 AGENTS.md 为准——先判断意图再行动。\n"
     "浏览器操作由 Playwright MCP 官方工具驱动，元素用 ref 定位："
     "browser_snapshot 看页面（元素带 ref）、browser_find 在长列表中按文本定位、"
     "browser_click/type/hover/drag/press_key 交互、browser_fill_form/select_option 填表/选下拉、"
